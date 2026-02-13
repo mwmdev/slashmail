@@ -69,6 +69,31 @@ Password is read from `SLASHMAIL_PASS` env var or prompted interactively.
 
 Connection options are global and can appear before or after the subcommand.
 
+### Config file
+
+Settings can be stored in a config file to avoid repeating connection options:
+
+| OS | Path |
+|---|---|
+| **Linux** | `~/.config/slashmail/config.toml` |
+| **macOS** | `~/Library/Application Support/slashmail/config.toml` |
+| **Windows** | `%APPDATA%\slashmail\config.toml` |
+
+Example `config.toml`:
+
+```toml
+host = "imap.gmail.com"
+port = 993
+tls = true
+user = "user@gmail.com"
+trash_folder = "[Gmail]/Trash"
+default_folder = "INBOX"
+```
+
+All fields are optional. CLI arguments and environment variables take precedence over config values.
+
+Use `--config <PATH>` to specify an alternative config file location.
+
 ### Filter options
 
 All commands that operate on messages share the same filter options:
@@ -78,8 +103,8 @@ All commands that operate on messages share the same filter options:
     --all-folders        Search across all folders (excludes Trash, Spam)
     --subject <TEXT>     Subject contains
     --from <TEXT>        From address contains
-    --since <DATE>       Messages since date (YYYY-MM-DD)
-    --before <DATE>      Messages before date (YYYY-MM-DD)
+    --since <DATE>       Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
+    --before <DATE>      Messages before date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     --larger <SIZE>      Messages larger than N bytes (supports K/M suffix)
 -n, --limit <N>          Limit number of results
 ```
@@ -110,6 +135,10 @@ slashmail search -u user@example.com
 # Search with filters
 slashmail search -u user@example.com --from "newsletter" --since 2025-01-01
 slashmail search -u user@example.com --subject "invoice" --larger 1M
+
+# Relative dates: last 7 days, 2 weeks, 3 months, 1 year
+slashmail search -u user@example.com --since 7d
+slashmail search -u user@example.com --since 3m --before 1m
 
 # Show only the 10 most recent matches
 slashmail search -u user@example.com --from "alerts" -n 10
