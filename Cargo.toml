@@ -1,0 +1,44 @@
+[package]
+name = "slashmail"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.83"
+description = "CLI for searching, managing, and bulk-operating on emails via IMAP"
+license = "MIT OR Apache-2.0"
+authors = ["Michael Wassmer <mikewassmer@protonmail.com>"]
+repository = "https://github.com/mwmdev/slashmail"
+homepage = "https://github.com/mwmdev/slashmail"
+readme = "README.md"
+keywords = ["email", "imap", "cli", "search", "delete"]
+categories = ["command-line-utilities", "email"]
+exclude = [".github/", "CLAUDE.md", "audit.md", "deny.toml", "flake.nix", "flake.lock"]
+
+[dependencies]
+imap = "2.4"
+native-tls = "0.2"
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+inquire = "0.9"
+comfy-table = "=7.1.3"
+mailparse = "0.15"
+anyhow = "1"
+indicatif = "0.17"
+regex = "1"
+zeroize = "1"
+openssl = { version = "0.10", features = ["vendored"], optional = true }
+
+[features]
+vendored-openssl = ["openssl"]
+integration-tests = []
+
+[dev-dependencies]
+lettre = "0.11"
+
+[patch.crates-io]
+imap-proto = { path = "patches/imap-proto" }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

@@ -1,0 +1,9 @@
+/target
+audit.md
+.env
+CLAUDE.md
+.DS_Store
+*.swp
+*.swo
+.vscode/
+.idea/
