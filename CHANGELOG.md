@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.2.0] - 2026-02-13
+
+### Added
+
+- Config file support — load connection defaults from `config.toml` (Linux: `~/.config/slashmail/`, macOS: `~/Library/Application Support/slashmail/`, Windows: `%APPDATA%\slashmail\`)
+- `--config <PATH>` flag to specify an alternative config file location
+- Relative date shorthand for `--since`/`--before` — use `7d`, `2w`, `3m`, `1y` in addition to `YYYY-MM-DD`
+- Configurable `trash_folder` and `default_folder` via config file
+
 ## [0.1.0] - 2026-02-10
 
 ### Added
@@ -38,4 +47,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
+[0.2.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.1.0
