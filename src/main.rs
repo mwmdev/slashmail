@@ -102,11 +102,11 @@ struct FilterArgs {
     #[arg(long)]
     from: Option<String>,
 
-    /// Messages since date (YYYY-MM-DD)
+    /// Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     #[arg(long)]
     since: Option<String>,
 
-    /// Messages before date (YYYY-MM-DD)
+    /// Messages before date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     #[arg(long)]
     before: Option<String>,
 

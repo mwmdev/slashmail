@@ -27,46 +27,117 @@ pub fn imap_quote(s: &str) -> String {
     format!("\"{escaped}\"")
 }
 
-/// Parse ISO 8601 date (YYYY-MM-DD) into IMAP date format (D-Mon-YYYY).
+const MONTH_ABBRS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+fn format_imap_date(day: u32, month: u32, year: i64) -> Result<String> {
+    if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        bail!("Invalid computed date: {year}-{month:02}-{day:02}");
+    }
+    Ok(format!(
+        "{}-{}-{}",
+        day,
+        MONTH_ABBRS[(month - 1) as usize],
+        year
+    ))
+}
+
+/// Convert seconds since epoch to (year, month, day) using civil calendar math.
+fn epoch_to_date(secs: i64) -> (i64, u32, u32) {
+    // Algorithm from Howard Hinnant's chrono-Compatible Low-Level Date Algorithms
+    let z = secs / 86400 + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = (z - era * 146097) as u32;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = (yoe as i64) + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// Resolve a relative date shorthand (e.g. "7d", "2w", "3m", "1y") to an IMAP date.
+fn resolve_relative_date(s: &str) -> Option<Result<String>> {
+    let re = Regex::new(r"^(\d+)([dwmy])$").unwrap();
+    let caps = re.captures(s)?;
+    let n: u32 = match caps[1].parse() {
+        Ok(v) => v,
+        Err(e) => return Some(Err(e.into())),
+    };
+    let unit = &caps[2];
+
+    let now_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+
+    Some(match unit {
+        "d" | "w" => {
+            let days = if unit == "w" { n as i64 * 7 } else { n as i64 };
+            let (y, m, d) = epoch_to_date(now_secs - days * 86400);
+            format_imap_date(d, m, y)
+        }
+        "m" => {
+            let (year, month, day) = epoch_to_date(now_secs);
+            let total_months = (year * 12 + month as i64 - 1) - n as i64;
+            let y = total_months.div_euclid(12);
+            let m = (total_months.rem_euclid(12) + 1) as u32;
+            let d = day.min(days_in_month(y, m));
+            format_imap_date(d, m, y)
+        }
+        "y" => {
+            let (year, month, day) = epoch_to_date(now_secs);
+            let y = year - n as i64;
+            let d = day.min(days_in_month(y, month));
+            format_imap_date(d, month, y)
+        }
+        _ => unreachable!(),
+    })
+}
+
+fn days_in_month(year: i64, month: u32) -> u32 {
+    match month {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if year % 4 == 0 && (year % 100 != 0 || year % 400 == 0) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 30,
+    }
+}
+
+/// Parse date into IMAP format (D-Mon-YYYY).
+/// Accepts ISO 8601 (YYYY-MM-DD) or relative shorthand (7d, 2w, 3m, 1y).
 fn parse_date(s: &str) -> Result<String> {
+    if let Some(result) = resolve_relative_date(s) {
+        return result;
+    }
+
     let re = Regex::new(r"^(\d{4})-(\d{2})-(\d{2})$").unwrap();
     let caps = re.captures(s).ok_or_else(|| {
         anyhow::anyhow!(
-            "Invalid date '{}' (expected YYYY-MM-DD, e.g. 2025-01-31)",
+            "Invalid date '{}' (expected YYYY-MM-DD or relative like 7d, 2w, 3m, 1y)",
             s
         )
     })?;
 
-    let month_num: u32 = caps[2].parse()?;
+    let year: i64 = caps[1].parse()?;
+    let month: u32 = caps[2].parse()?;
     let day: u32 = caps[3].parse()?;
 
-    let month_abbr = match month_num {
-        1 => "Jan",
-        2 => "Feb",
-        3 => "Mar",
-        4 => "Apr",
-        5 => "May",
-        6 => "Jun",
-        7 => "Jul",
-        8 => "Aug",
-        9 => "Sep",
-        10 => "Oct",
-        11 => "Nov",
-        12 => "Dec",
-        _ => bail!(
+    format_imap_date(day, month, year).map_err(|_| {
+        anyhow::anyhow!(
             "Invalid date '{}' (expected YYYY-MM-DD, e.g. 2025-01-31)",
             s
-        ),
-    };
-
-    if !(1..=31).contains(&day) {
-        bail!(
-            "Invalid date '{}' (expected YYYY-MM-DD, e.g. 2025-01-31)",
-            s
-        );
-    }
-
-    Ok(format!("{}-{}-{}", day, month_abbr, &caps[1]))
+        )
+    })
 }
 
 pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
@@ -445,6 +516,78 @@ mod tests {
         assert!(parse_date("2025-00-01").is_err());
         assert!(parse_date("2025-01-00").is_err());
         assert!(parse_date("2025-01-32").is_err());
+    }
+
+    #[test]
+    fn parse_date_relative_returns_valid_imap_date() {
+        // We can't assert exact dates since they depend on "now",
+        // but we can verify the format is valid IMAP date (D-Mon-YYYY)
+        let re = Regex::new(r"^\d{1,2}-(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)-\d{4}$")
+            .unwrap();
+        for input in ["7d", "14d", "2w", "1m", "3m", "6m", "1y", "2y"] {
+            let result = parse_date(input).unwrap();
+            assert!(
+                re.is_match(&result),
+                "'{input}' produced invalid IMAP date: '{result}'"
+            );
+        }
+    }
+
+    #[test]
+    fn parse_date_relative_zero_days_is_today() {
+        // 0d should produce today's date
+        let result = parse_date("0d").unwrap();
+        // Verify against epoch_to_date(now)
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let (y, m, d) = epoch_to_date(now);
+        let expected = format_imap_date(d, m, y).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn epoch_to_date_known_values() {
+        // 2025-01-01 00:00:00 UTC = 1735689600
+        assert_eq!(epoch_to_date(1_735_689_600), (2025, 1, 1));
+        // Unix epoch
+        assert_eq!(epoch_to_date(0), (1970, 1, 1));
+        // 2000-02-29 (leap year)
+        assert_eq!(epoch_to_date(951_782_400), (2000, 2, 29));
+    }
+
+    #[test]
+    fn days_in_month_leap_year() {
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2023, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29); // century leap
+        assert_eq!(days_in_month(1900, 2), 28); // century non-leap
+    }
+
+    #[test]
+    fn parse_date_relative_month_clamps_day() {
+        // If today is Jan 31 and we subtract 1 month, we get Dec 31 (not "Feb 31")
+        // We can't control "today" in tests, but we can verify it doesn't error
+        assert!(parse_date("1m").is_ok());
+        assert!(parse_date("12m").is_ok());
+        assert!(parse_date("24m").is_ok());
+    }
+
+    #[test]
+    fn parse_date_relative_large_values() {
+        assert!(parse_date("365d").is_ok());
+        assert!(parse_date("52w").is_ok());
+        assert!(parse_date("120m").is_ok());
+        assert!(parse_date("50y").is_ok());
+    }
+
+    #[test]
+    fn parse_date_relative_rejects_invalid_unit() {
+        assert!(parse_date("7x").is_err());
+        assert!(parse_date("3h").is_err());
+        assert!(parse_date("d").is_err());
+        assert!(parse_date("7").is_err());
     }
 
     #[test]
