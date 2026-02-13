@@ -1,4 +1,4 @@
-use slashmail::{connection, delete, display, export, search};
+use slashmail::{config, connection, delete, display, export, search};
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -27,11 +27,11 @@ fn spinner(msg: &str) -> ProgressBar {
     about = "IMAP CLI for searching, managing, and inspecting email"
 )]
 struct Cli {
-    /// IMAP host
-    #[arg(long, default_value = "127.0.0.1", global = true)]
-    host: String,
+    /// IMAP host [default: 127.0.0.1]
+    #[arg(long, global = true)]
+    host: Option<String>,
 
-    /// IMAP port (default: 1143 plain, 993 TLS)
+    /// IMAP port [default: 1143 plain, 993 TLS]
     #[arg(long, global = true)]
     port: Option<u16>,
 
@@ -42,6 +42,10 @@ struct Cli {
     /// IMAP username
     #[arg(short, long, env = "SLASHMAIL_USER", global = true)]
     user: Option<String>,
+
+    /// Path to config file
+    #[arg(long, global = true)]
+    config: Option<PathBuf>,
 
     /// IMAP password (or SLASHMAIL_PASS env; prompts if missing)
     #[arg(skip)]
@@ -82,9 +86,9 @@ enum Commands {
 
 #[derive(Parser)]
 struct FilterArgs {
-    /// Folder to search
-    #[arg(short, long, default_value = "INBOX")]
-    folder: String,
+    /// Folder to search [default: INBOX]
+    #[arg(short, long)]
+    folder: Option<String>,
 
     /// Search across all folders (excludes Trash, Spam)
     #[arg(long)]
@@ -126,9 +130,9 @@ struct DeleteArgs {
     #[command(flatten)]
     filter: FilterArgs,
 
-    /// Destination trash folder
-    #[arg(long, default_value = "Trash")]
-    trash_folder: String,
+    /// Destination trash folder [default: Trash]
+    #[arg(long)]
+    trash_folder: Option<String>,
 
     /// Limit number of messages to act on
     #[arg(short = 'n', long)]
@@ -228,9 +232,12 @@ struct CountArgs {
 }
 
 impl FilterArgs {
-    fn to_criteria(&self, limit: Option<usize>) -> search::SearchCriteria {
+    fn to_criteria(&self, limit: Option<usize>, default_folder: &str) -> search::SearchCriteria {
         search::SearchCriteria {
-            folder: self.folder.clone(),
+            folder: self
+                .folder
+                .clone()
+                .unwrap_or_else(|| default_folder.to_string()),
             all_folders: self.all_folders,
             subject: self.subject.clone(),
             from: self.from.clone(),
@@ -401,8 +408,12 @@ fn cmd_status(session: &mut connection::ImapSession) -> Result<()> {
     Ok(())
 }
 
-fn cmd_export(session: &mut connection::ImapSession, args: &ExportArgs) -> Result<()> {
-    let criteria = args.filter.to_criteria(args.limit);
+fn cmd_export(
+    session: &mut connection::ImapSession,
+    args: &ExportArgs,
+    default_folder: &str,
+) -> Result<()> {
+    let criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
     let messages = search::search(session, &criteria)?;
     sp.finish_and_clear();
@@ -495,10 +506,14 @@ fn mark_action_desc(read: bool, unread: bool, flagged: bool, unflagged: bool) ->
     actions.join(" + ")
 }
 
-fn cmd_mark(session: &mut connection::ImapSession, args: &MarkArgs) -> Result<()> {
+fn cmd_mark(
+    session: &mut connection::ImapSession,
+    args: &MarkArgs,
+    default_folder: &str,
+) -> Result<()> {
     validate_mark_flags(args.read, args.unread, args.flagged, args.unflagged)?;
 
-    let criteria = args.filter.to_criteria(args.limit);
+    let criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
     let messages = search::search(session, &criteria)?;
     sp.finish_and_clear();
@@ -570,8 +585,12 @@ fn cmd_mark(session: &mut connection::ImapSession, args: &MarkArgs) -> Result<()
     Ok(())
 }
 
-fn cmd_count(session: &mut connection::ImapSession, args: &CountArgs) -> Result<()> {
-    let criteria = args.filter.to_criteria(None);
+fn cmd_count(
+    session: &mut connection::ImapSession,
+    args: &CountArgs,
+    default_folder: &str,
+) -> Result<()> {
+    let criteria = args.filter.to_criteria(None, default_folder);
     let query = search::build_query(&criteria)?;
 
     let sp = spinner("Counting...");
@@ -657,14 +676,29 @@ fn main() -> Result<()> {
         _ => {}
     }
 
-    let port = cli.port.unwrap_or(if cli.tls { 993 } else { 1143 });
-    let user = cli.user.ok_or_else(|| {
+    // Load config: explicit --config path > default location > empty
+    let cfg = config::Config::load(cli.config.as_deref())?;
+
+    // Resolve values: CLI/env > config > built-in default
+    let tls = cli.tls || cfg.tls.unwrap_or(false);
+    let host = cli
+        .host
+        .or(cfg.host)
+        .unwrap_or_else(|| "127.0.0.1".to_string());
+    let port = cli
+        .port
+        .or(cfg.port)
+        .unwrap_or(if tls { 993 } else { 1143 });
+    let user = cli.user.or(cfg.user).ok_or_else(|| {
         anyhow::anyhow!("IMAP username required (use -u/--user or SLASHMAIL_USER env)")
     })?;
+    let default_folder = cfg.default_folder.unwrap_or_else(|| "INBOX".to_string());
+    let default_trash = cfg.trash_folder.unwrap_or_else(|| "Trash".to_string());
+
     let mut pass = get_password()?;
 
     let sp = spinner("Connecting...");
-    let mut session = connection::connect(&cli.host, port, cli.tls, &user, &pass)?;
+    let mut session = connection::connect(&host, port, tls, &user, &pass)?;
     sp.finish_and_clear();
 
     // Clear password from memory
@@ -672,7 +706,7 @@ fn main() -> Result<()> {
 
     let result = match &cli.command {
         Commands::Search(args) => {
-            let criteria = args.filter.to_criteria(args.limit);
+            let criteria = args.filter.to_criteria(args.limit, &default_folder);
             let sp = spinner("Searching...");
             let messages = search::search(&mut session, &criteria)?;
             sp.finish_and_clear();
@@ -680,22 +714,17 @@ fn main() -> Result<()> {
             Ok(())
         }
         Commands::Delete(args) => {
-            let criteria = args.filter.to_criteria(args.limit);
-            delete::delete(
-                &mut session,
-                &criteria,
-                &args.trash_folder,
-                args.yes,
-                args.dry_run,
-            )
+            let criteria = args.filter.to_criteria(args.limit, &default_folder);
+            let trash = args.trash_folder.as_deref().unwrap_or(&default_trash);
+            delete::delete(&mut session, &criteria, trash, args.yes, args.dry_run)
         }
         Commands::Move(args) => {
-            let criteria = args.filter.to_criteria(args.limit);
+            let criteria = args.filter.to_criteria(args.limit, &default_folder);
             delete::search_and_move(&mut session, &criteria, &args.to, args.yes, args.dry_run)
         }
-        Commands::Export(args) => cmd_export(&mut session, args),
-        Commands::Mark(args) => cmd_mark(&mut session, args),
-        Commands::Count(args) => cmd_count(&mut session, args),
+        Commands::Export(args) => cmd_export(&mut session, args, &default_folder),
+        Commands::Mark(args) => cmd_mark(&mut session, args, &default_folder),
+        Commands::Count(args) => cmd_count(&mut session, args, &default_folder),
         Commands::Quota => cmd_quota(&mut session),
         Commands::Status => cmd_status(&mut session),
         Commands::Completions { .. } | Commands::Manpage => unreachable!(),

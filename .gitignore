@@ -1,5 +1,6 @@
 /target
 audit.md
+docs/
 .env
 CLAUDE.md
 .DS_Store

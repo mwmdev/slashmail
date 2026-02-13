@@ -1,3 +1,4 @@
+pub mod config;
 pub mod connection;
 pub mod delete;
 pub mod display;
