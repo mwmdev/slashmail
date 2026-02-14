@@ -6,6 +6,7 @@ use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Color, Table};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
 use std::path::PathBuf;
+use std::sync::OnceLock;
 use std::time::Duration;
 use zeroize::Zeroize;
 
@@ -19,6 +20,21 @@ fn spinner(msg: &str) -> ProgressBar {
     pb.set_message(msg.to_string());
     pb.enable_steady_tick(Duration::from_millis(80));
     pb
+}
+
+fn quota_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\*\s+QUOTA\s+.*?\(([^)]+)\)").unwrap())
+}
+
+fn quota_resource_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(\w+)\s+(\d+)\s+(\d+)").unwrap())
+}
+
+fn status_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"(?i)\*\s+STATUS\s+.*?\(([^)]*)\)").unwrap())
 }
 
 #[derive(Parser)]
@@ -275,13 +291,10 @@ fn cmd_quota(session: &mut connection::ImapSession) -> Result<()> {
     let text = String::from_utf8_lossy(&response);
 
     // Parse: * QUOTA "root" (STORAGE used limit) (MESSAGE used limit) ...
-    let re = Regex::new(r"(?i)\*\s+QUOTA\s+.*?\(([^)]+)\)").unwrap();
-    let resource_re = Regex::new(r"(\w+)\s+(\d+)\s+(\d+)").unwrap();
-
     let mut rows: Vec<(String, u64, u64)> = Vec::new();
-    for cap in re.captures_iter(&text) {
+    for cap in quota_regex().captures_iter(&text) {
         let inner = &cap[1];
-        if let Some(m) = resource_re.captures(inner) {
+        if let Some(m) = quota_resource_regex().captures(inner) {
             let name = m[1].to_string();
             let used: u64 = m[2].parse().unwrap_or(0);
             let limit: u64 = m[3].parse().unwrap_or(0);
@@ -347,9 +360,9 @@ fn cmd_status(session: &mut connection::ImapSession) -> Result<()> {
     let mut total_unseen: u32 = 0;
     let mut total_recent: u32 = 0;
 
-    let re = Regex::new(r"(?i)\*\s+STATUS\s+.*?\(([^)]*)\)").unwrap();
-
     for name in &folder_names {
+        // Folder names are server-controlled, so always quote via imap_quote()
+        // which strips control chars and escapes IMAP-special characters.
         let quoted = search::imap_quote(name);
         let cmd = format!("STATUS {quoted} (MESSAGES UNSEEN RECENT)");
         let response = match session.run_command_and_read_response(&cmd) {
@@ -365,7 +378,7 @@ fn cmd_status(session: &mut connection::ImapSession) -> Result<()> {
         let mut unseen: u32 = 0;
         let mut recent: u32 = 0;
 
-        if let Some(cap) = re.captures(&text) {
+        if let Some(cap) = status_regex().captures(&text) {
             let attrs = &cap[1];
             // Parse key-value pairs: MESSAGES 142 UNSEEN 12 RECENT 3
             let tokens: Vec<&str> = attrs.split_whitespace().collect();
@@ -698,11 +711,13 @@ fn main() -> Result<()> {
     let mut pass = get_password()?;
 
     let sp = spinner("Connecting...");
-    let mut session = connection::connect(&host, port, tls, &user, &pass)?;
+    let session_result = connection::connect(&host, port, tls, &user, &pass);
     sp.finish_and_clear();
 
-    // Clear password from memory
+    // Clear password from memory on both success and error paths.
     pass.zeroize();
+
+    let mut session = session_result?;
 
     let result = match &cli.command {
         Commands::Search(args) => {

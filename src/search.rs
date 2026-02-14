@@ -31,6 +31,10 @@ const MONTH_ABBRS: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
+// RFC 3501 states servers should accept at least 8000 octets per command line.
+// Keep UID set chunks comfortably below that floor.
+const MAX_UID_SET_LENGTH: usize = 4000;
+
 fn format_imap_date(day: u32, month: u32, year: i64) -> Result<String> {
     if !(1..=12).contains(&month) || !(1..=31).contains(&day) {
         bail!("Invalid computed date: {year}-{month:02}-{day:02}");
@@ -158,7 +162,7 @@ pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
         parts.push(format!("BEFORE {date}"));
     }
     if let Some(ref larger) = criteria.larger {
-        let bytes = parse_size(larger);
+        let bytes = parse_size(larger)?;
         parts.push(format!("LARGER {bytes}"));
     }
 
@@ -169,18 +173,27 @@ pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     }
 }
 
-fn parse_size(s: &str) -> u64 {
+fn parse_size(s: &str) -> Result<u64> {
     let s = s.trim();
-    if let Some(n) = s.strip_suffix('M').or_else(|| s.strip_suffix('m')) {
-        n.trim()
-            .parse::<u64>()
-            .unwrap_or(0)
-            .saturating_mul(1_048_576)
-    } else if let Some(n) = s.strip_suffix('K').or_else(|| s.strip_suffix('k')) {
-        n.trim().parse::<u64>().unwrap_or(0).saturating_mul(1024)
-    } else {
-        s.parse::<u64>().unwrap_or(0)
+    if s.is_empty() {
+        bail!("Invalid size '' (expected bytes, or value with K/M suffix such as 10K or 5M)");
     }
+
+    let (raw, multiplier) = if let Some(n) = s.strip_suffix('M').or_else(|| s.strip_suffix('m')) {
+        (n.trim(), 1_048_576_u64)
+    } else if let Some(n) = s.strip_suffix('K').or_else(|| s.strip_suffix('k')) {
+        (n.trim(), 1024_u64)
+    } else {
+        (s, 1_u64)
+    };
+
+    let value = raw.parse::<u64>().with_context(|| {
+        format!("Invalid size '{s}' (expected bytes, or value with K/M suffix such as 10K or 5M)")
+    })?;
+
+    value
+        .checked_mul(multiplier)
+        .ok_or_else(|| anyhow::anyhow!("Size '{s}' is too large"))
 }
 
 /// Truncate a string to at most `max` characters, appending "..." if truncated.
@@ -245,7 +258,8 @@ fn try_uid_sort(session: &mut ImapSession, query: &str) -> Result<Option<Vec<u32
 }
 
 /// Build UID set strings with range compression, chunked to stay under IMAP command length limits.
-/// Consecutive UIDs are compressed into `start:end` ranges. Each returned string stays under 4000 chars.
+/// Consecutive UIDs are compressed into `start:end` ranges.
+/// Each returned string stays under MAX_UID_SET_LENGTH chars.
 pub fn build_uid_set(uids: &[u32]) -> Vec<String> {
     if uids.is_empty() {
         return Vec::new();
@@ -270,7 +284,7 @@ pub fn build_uid_set(uids: &[u32]) -> Vec<String> {
     }
     ranges.push((start, end));
 
-    // Chunk into strings under 4000 chars
+    // Chunk into strings under MAX_UID_SET_LENGTH chars.
     let mut chunks = Vec::new();
     let mut current = String::new();
     for (s, e) in &ranges {
@@ -281,7 +295,7 @@ pub fn build_uid_set(uids: &[u32]) -> Vec<String> {
         };
         if current.is_empty() {
             current = part;
-        } else if current.len() + 1 + part.len() > 4000 {
+        } else if current.len() + 1 + part.len() > MAX_UID_SET_LENGTH {
             chunks.push(std::mem::take(&mut current));
             current = part;
         } else {
@@ -334,6 +348,7 @@ fn fetch_messages(
     // FETCH results may come back in arbitrary order; index by UID
     let mut by_uid = std::collections::HashMap::new();
     for chunk in &uid_chunks {
+        let mut warned_invalid_uid = false;
         let fetches = session
             .uid_fetch(
                 chunk,
@@ -344,7 +359,15 @@ fn fetch_messages(
         for fetch in fetches.iter() {
             let uid = match fetch.uid {
                 Some(u) if u > 0 => u,
-                _ => continue, // Skip invalid UIDs
+                _ => {
+                    if !warned_invalid_uid {
+                        eprintln!(
+                            "Warning: skipping fetched message(s) with missing/invalid UID in '{clean_folder}'"
+                        );
+                        warned_invalid_uid = true;
+                    }
+                    continue;
+                }
             };
             let size = fetch.size.unwrap_or(0);
             let header_bytes = fetch.header().unwrap_or(b"");
@@ -456,8 +479,22 @@ pub fn search(session: &mut ImapSession, criteria: &SearchCriteria) -> Result<Ve
         }
         Ok(all_messages)
     } else {
+        ensure_folder_exists(session, &criteria.folder)?;
         fetch_messages(session, &criteria.folder, &query, false, criteria.limit)
     }
+}
+
+fn ensure_folder_exists(session: &mut ImapSession, folder: &str) -> Result<()> {
+    let folders = session
+        .list(Some(""), Some("*"))
+        .context("Failed to list folders")?;
+    let exists = folders.iter().any(|f| f.name() == folder);
+    if !exists {
+        bail!(
+            "Folder '{folder}' does not exist. Use `slashmail status` to list available folders."
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -592,28 +629,33 @@ mod tests {
 
     #[test]
     fn parse_size_plain_bytes() {
-        assert_eq!(parse_size("1024"), 1024);
-        assert_eq!(parse_size("0"), 0);
+        assert_eq!(parse_size("1024").unwrap(), 1024);
+        assert_eq!(parse_size("0").unwrap(), 0);
     }
 
     #[test]
     fn parse_size_kilobytes() {
-        assert_eq!(parse_size("1K"), 1024);
-        assert_eq!(parse_size("1k"), 1024);
-        assert_eq!(parse_size("10K"), 10240);
+        assert_eq!(parse_size("1K").unwrap(), 1024);
+        assert_eq!(parse_size("1k").unwrap(), 1024);
+        assert_eq!(parse_size("10K").unwrap(), 10240);
     }
 
     #[test]
     fn parse_size_megabytes() {
-        assert_eq!(parse_size("1M"), 1_048_576);
-        assert_eq!(parse_size("1m"), 1_048_576);
-        assert_eq!(parse_size("5M"), 5_242_880);
+        assert_eq!(parse_size("1M").unwrap(), 1_048_576);
+        assert_eq!(parse_size("1m").unwrap(), 1_048_576);
+        assert_eq!(parse_size("5M").unwrap(), 5_242_880);
     }
 
     #[test]
-    fn parse_size_invalid_returns_zero() {
-        assert_eq!(parse_size("abc"), 0);
-        assert_eq!(parse_size(""), 0);
+    fn parse_size_invalid_errors() {
+        assert!(parse_size("abc").is_err());
+        assert!(parse_size("").is_err());
+    }
+
+    #[test]
+    fn parse_size_overflow_errors() {
+        assert!(parse_size("18446744073709551615M").is_err());
     }
 
     #[test]
@@ -733,6 +775,21 @@ mod tests {
     }
 
     #[test]
+    fn build_query_invalid_size_errors() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: None,
+            since: None,
+            before: None,
+            larger: Some("abc".into()),
+            limit: None,
+        };
+        assert!(build_query(&c).is_err());
+    }
+
+    #[test]
     fn parse_sort_response_basic() {
         let data = b"* SORT 5 3 1\r\nA001 OK SORT completed\r\n";
         let uids = parse_sort_response(data).unwrap();
@@ -792,12 +849,12 @@ mod tests {
 
     #[test]
     fn build_uid_set_chunks_large_sets() {
-        // Generate enough UIDs to exceed 4000 chars (non-consecutive to prevent compression)
+        // Generate enough UIDs to exceed MAX_UID_SET_LENGTH chars.
         let uids: Vec<u32> = (0..2000).map(|i| i * 3).collect();
         let chunks = build_uid_set(&uids);
         assert!(chunks.len() > 1);
         for chunk in &chunks {
-            assert!(chunk.len() <= 4000);
+            assert!(chunk.len() <= MAX_UID_SET_LENGTH);
         }
     }
 }

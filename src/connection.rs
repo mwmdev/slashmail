@@ -187,6 +187,8 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
     if tls {
         let tls_connector = native_tls::TlsConnector::builder()
             .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
+            .danger_accept_invalid_certs(false)
+            .danger_accept_invalid_hostnames(false)
             .build()
             .context("Failed to create TLS connector")?;
         let client = imap::connect((&*addr, port), host, &tls_connector)
