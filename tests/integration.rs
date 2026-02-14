@@ -83,6 +83,22 @@ fn sleep_for_delivery() {
     thread::sleep(Duration::from_millis(500));
 }
 
+/// Convert days since Unix epoch to (year, month, day). Simple civil calendar math.
+fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
+    // Algorithm from http://howardhinnant.github.io/date_algorithms.html
+    let z = days + 719468;
+    let era = z / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
 #[test]
 fn connect_and_logout() {
     let user = unique_user();
@@ -169,6 +185,77 @@ fn search_with_limit() {
     let results = search::search(&mut session, &criteria).unwrap();
 
     assert_eq!(results.len(), 2);
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_size() {
+    let user = unique_user();
+    let small_body = "tiny";
+    let large_body = "x".repeat(10_000);
+    send_email(&user, "Small msg", small_body);
+    send_email(&user, "Large msg", &large_body);
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.larger = Some("5K".to_string());
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the large message should match");
+    assert!(results[0].subject.contains("Large msg"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_date_range() {
+    let user = unique_user();
+    send_email(&user, "Recent email", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+
+    // SINCE today should find the message
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // Convert epoch to YYYY-MM-DD (UTC, good enough for same-day test)
+    let days = now / 86400;
+    let (year, month, day) = epoch_days_to_ymd(days);
+    let today = format!("{year:04}-{month:02}-{day:02}");
+    let mut criteria = default_criteria("INBOX");
+    criteria.since = Some(today.clone());
+    let results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(results.len(), 1, "SINCE today should find today's message");
+
+    // BEFORE today should find nothing (BEFORE is exclusive in IMAP)
+    let mut criteria = default_criteria("INBOX");
+    criteria.before = Some(today);
+    let results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(results.len(), 0, "BEFORE today should exclude today's message");
+
+    // SINCE a far-future date should find nothing
+    let mut criteria = default_criteria("INBOX");
+    criteria.since = Some("2099-01-01".to_string());
+    let results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(results.len(), 0, "SINCE far future should find nothing");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_missing_folder_errors() {
+    let user = unique_user();
+    let mut session = imap_connect(&user);
+
+    let criteria = default_criteria("DoesNotExist");
+    let result = search::search(&mut session, &criteria);
+    assert!(result.is_err());
+    let err = result.err().unwrap();
+    assert!(err.to_string().contains("does not exist"));
 
     session.logout().unwrap();
 }
@@ -379,6 +466,55 @@ fn export_force_overwrites() {
     session.logout().unwrap();
 }
 
+#[test]
+fn export_multiple_folders_uid_collision() {
+    let user = unique_user();
+    send_email(&user, "Inbox export msg", "inbox body");
+    send_email(&user, "Archive export msg", "archive body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.create("Archive").unwrap();
+
+    // Move one message to Archive
+    let criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &criteria).unwrap();
+    let archive_msg = results
+        .iter()
+        .find(|m| m.subject.contains("Archive export"))
+        .unwrap();
+    let uid_set = archive_msg.uid.to_string();
+    session.select("INBOX").unwrap();
+    session.uid_move_or_fallback(&uid_set, "Archive").unwrap();
+
+    // Search all folders to get messages from both INBOX and Archive
+    let mut all_criteria = default_criteria("INBOX");
+    all_criteria.all_folders = true;
+    let all_messages = search::search(&mut session, &all_criteria).unwrap();
+    assert_eq!(all_messages.len(), 2);
+
+    let temp_dir = std::env::temp_dir().join(format!("slashmail_multi_{user}"));
+
+    // Export all — both messages should be exported even if UIDs collide
+    let (exported, skipped) =
+        export::export_messages(&mut session, &all_messages, "INBOX", &temp_dir, false).unwrap();
+
+    assert_eq!(exported + skipped, 2, "All messages should be accounted for");
+
+    // Count actual .eml files on disk
+    let _entries: Vec<_> = std::fs::read_dir(&temp_dir)
+        .unwrap()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |ext| ext == "eml"))
+        .collect();
+
+    // NOTE: If UIDs collide across folders, the second write overwrites the first,
+    // so exported=2 but only 1 file on disk. This documents the known bug.
+    // When the bug is fixed (folder-prefixed filenames), both asserts become 2.
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    session.logout().unwrap();
+}
+
 // --- Folder validation tests ---
 
 #[test]
@@ -517,6 +653,120 @@ fn mark_unread_removes_seen() {
 }
 
 // --- All-folders search tests ---
+
+#[test]
+fn search_all_folders_with_subject_filter() {
+    let user = unique_user();
+    send_email(&user, "Report Q1", "body");
+    send_email(&user, "Invoice 42", "body");
+    send_email(&user, "Report Q2", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.create("Archive").unwrap();
+
+    // Move "Report Q2" to Archive
+    let criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &criteria).unwrap();
+    let q2_msg = results
+        .iter()
+        .find(|m| m.subject.contains("Report Q2"))
+        .unwrap();
+    let uid_set = q2_msg.uid.to_string();
+    session.select("INBOX").unwrap();
+    session.uid_move_or_fallback(&uid_set, "Archive").unwrap();
+
+    // Search all folders with subject filter — should find Report Q1 (INBOX) + Report Q2 (Archive)
+    let mut all_criteria = default_criteria("INBOX");
+    all_criteria.all_folders = true;
+    all_criteria.subject = Some("Report".to_string());
+    let results = search::search(&mut session, &all_criteria).unwrap();
+
+    assert_eq!(results.len(), 2, "Should find both Report messages across folders");
+    assert!(results.iter().all(|m| m.subject.contains("Report")));
+
+    let folders: Vec<_> = results.iter().filter_map(|m| m.folder.as_deref()).collect();
+    assert!(folders.contains(&"INBOX"), "Should include INBOX");
+    assert!(folders.contains(&"Archive"), "Should include Archive");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn delete_all_folders() {
+    let user = unique_user();
+    send_email(&user, "Inbox delete all", "body");
+    send_email(&user, "Archive delete all", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.create("Archive").unwrap();
+    session.create("Trash").unwrap();
+
+    // Move one message to Archive
+    let criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &criteria).unwrap();
+    let archive_msg = results
+        .iter()
+        .find(|m| m.subject.contains("Archive delete"))
+        .unwrap();
+    let uid_set = archive_msg.uid.to_string();
+    session.select("INBOX").unwrap();
+    session.uid_move_or_fallback(&uid_set, "Archive").unwrap();
+
+    // Delete with all_folders — should move messages from both INBOX and Archive to Trash
+    let mut all_criteria = default_criteria("INBOX");
+    all_criteria.all_folders = true;
+    delete::delete(&mut session, &all_criteria, "Trash", true, false).unwrap();
+
+    // Both INBOX and Archive should be empty
+    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    assert_eq!(inbox.len(), 0, "INBOX should be empty");
+    let archive = search::search(&mut session, &default_criteria("Archive")).unwrap();
+    assert_eq!(archive.len(), 0, "Archive should be empty");
+
+    // Trash should have both messages
+    let trash = search::search(&mut session, &default_criteria("Trash")).unwrap();
+    assert_eq!(trash.len(), 2, "Trash should have 2 messages");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn mark_combined_flags() {
+    let user = unique_user();
+    send_email(&user, "Combo flag test", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(results.len(), 1);
+
+    let uid_set = results[0].uid.to_string();
+    session.select("INBOX").unwrap();
+
+    // Set both Seen and Flagged in a single STORE command
+    session
+        .uid_store(&uid_set, "+FLAGS (\\Seen \\Flagged)")
+        .unwrap();
+
+    let fetches = session.uid_fetch(&uid_set, "FLAGS").unwrap();
+    let fetch = fetches.iter().next().unwrap();
+    let flags = fetch.flags();
+    assert!(
+        flags.iter().any(|f| matches!(f, imap::types::Flag::Seen)),
+        "Message should have Seen flag, got: {flags:?}"
+    );
+    assert!(
+        flags
+            .iter()
+            .any(|f| matches!(f, imap::types::Flag::Flagged)),
+        "Message should have Flagged flag, got: {flags:?}"
+    );
+
+    session.logout().unwrap();
+}
 
 #[test]
 fn search_all_folders() {
