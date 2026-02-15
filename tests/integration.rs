@@ -94,6 +94,8 @@ fn default_criteria(folder: &str) -> SearchCriteria {
         from: None,
         to: None,
         cc: None,
+        seen: false,
+        unseen: false,
         since: None,
         before: None,
         larger: None,
@@ -226,6 +228,58 @@ fn search_by_cc() {
 
     assert_eq!(results.len(), 1);
     assert!(results[0].subject.contains("CC test"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_unseen() {
+    let user = unique_user();
+    send_email(&user, "Unread msg", "body");
+    send_email(&user, "Read msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    // Mark one message as seen via IMAP STORE
+    let uids: Vec<u32> = session.uid_search("SUBJECT \"Read msg\"").unwrap().into_iter().collect();
+    assert_eq!(uids.len(), 1);
+    session.uid_store(&uids[0].to_string(), "+FLAGS (\\Seen)").unwrap();
+
+    // Search for unseen only
+    let mut criteria = default_criteria("INBOX");
+    criteria.unseen = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].subject.contains("Unread msg"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_seen() {
+    let user = unique_user();
+    send_email(&user, "Unread msg", "body");
+    send_email(&user, "Read msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    // Mark one message as seen
+    let uids: Vec<u32> = session.uid_search("SUBJECT \"Read msg\"").unwrap().into_iter().collect();
+    assert_eq!(uids.len(), 1);
+    session.uid_store(&uids[0].to_string(), "+FLAGS (\\Seen)").unwrap();
+
+    // Search for seen only
+    let mut criteria = default_criteria("INBOX");
+    criteria.seen = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].subject.contains("Read msg"));
 
     session.logout().unwrap();
 }

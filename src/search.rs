@@ -11,6 +11,8 @@ pub struct SearchCriteria {
     pub from: Option<String>,
     pub to: Option<String>,
     pub cc: Option<String>,
+    pub seen: bool,
+    pub unseen: bool,
     pub since: Option<String>,
     pub before: Option<String>,
     pub larger: Option<String>,
@@ -160,6 +162,12 @@ pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     }
     if let Some(ref cc) = criteria.cc {
         parts.push(format!("CC {}", imap_quote(cc)));
+    }
+    if criteria.seen {
+        parts.push("SEEN".to_string());
+    }
+    if criteria.unseen {
+        parts.push("UNSEEN".to_string());
     }
     if let Some(ref since) = criteria.since {
         let date = parse_date(since)?;
@@ -695,6 +703,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: None,
             before: None,
             larger: None,
@@ -712,6 +722,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: None,
             before: None,
             larger: None,
@@ -729,6 +741,8 @@ mod tests {
             from: Some("user@example.com".into()),
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: None,
             before: None,
             larger: None,
@@ -749,6 +763,8 @@ mod tests {
             from: None,
             to: Some("alice@example.com".into()),
             cc: Some("bob@example.com".into()),
+            seen: false,
+            unseen: false,
             since: None,
             before: None,
             larger: None,
@@ -761,6 +777,47 @@ mod tests {
     }
 
     #[test]
+    fn build_query_seen() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: None,
+            to: None,
+            cc: None,
+            seen: true,
+            unseen: false,
+            since: None,
+            before: None,
+            larger: None,
+            limit: None,
+        };
+        assert_eq!(build_query(&c).unwrap(), "SEEN");
+    }
+
+    #[test]
+    fn build_query_unseen_with_from() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: Some("alice@example.com".into()),
+            to: None,
+            cc: None,
+            seen: false,
+            unseen: true,
+            since: None,
+            before: None,
+            larger: None,
+            limit: None,
+        };
+        assert_eq!(
+            build_query(&c).unwrap(),
+            "FROM \"alice@example.com\" UNSEEN"
+        );
+    }
+
+    #[test]
     fn build_query_date_range() {
         let c = SearchCriteria {
             folder: "INBOX".into(),
@@ -769,6 +826,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: Some("2025-01-01".into()),
             before: Some("2025-12-31".into()),
             larger: None,
@@ -789,6 +848,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: None,
             before: None,
             larger: Some("1M".into()),
@@ -806,6 +867,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: Some("not-a-date".into()),
             before: None,
             larger: None,
@@ -823,6 +886,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            seen: false,
+            unseen: false,
             since: None,
             before: None,
             larger: Some("abc".into()),

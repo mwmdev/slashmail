@@ -126,6 +126,14 @@ struct FilterArgs {
     #[arg(long)]
     cc: Option<String>,
 
+    /// Only read messages
+    #[arg(long, conflicts_with = "unseen")]
+    seen: bool,
+
+    /// Only unread messages
+    #[arg(long, conflicts_with = "seen")]
+    unseen: bool,
+
     /// Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     #[arg(long)]
     since: Option<String>,
@@ -267,6 +275,8 @@ impl FilterArgs {
             from: self.from.clone(),
             to: self.to.clone(),
             cc: self.cc.clone(),
+            seen: self.seen,
+            unseen: self.unseen,
             since: self.since.clone(),
             before: self.before.clone(),
             larger: self.larger.clone(),
