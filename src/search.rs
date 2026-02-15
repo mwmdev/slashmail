@@ -9,6 +9,8 @@ pub struct SearchCriteria {
     pub all_folders: bool,
     pub subject: Option<String>,
     pub from: Option<String>,
+    pub to: Option<String>,
+    pub cc: Option<String>,
     pub since: Option<String>,
     pub before: Option<String>,
     pub larger: Option<String>,
@@ -152,6 +154,12 @@ pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     }
     if let Some(ref from) = criteria.from {
         parts.push(format!("FROM {}", imap_quote(from)));
+    }
+    if let Some(ref to) = criteria.to {
+        parts.push(format!("TO {}", imap_quote(to)));
+    }
+    if let Some(ref cc) = criteria.cc {
+        parts.push(format!("CC {}", imap_quote(cc)));
     }
     if let Some(ref since) = criteria.since {
         let date = parse_date(since)?;
@@ -685,6 +693,8 @@ mod tests {
             all_folders: false,
             subject: None,
             from: None,
+            to: None,
+            cc: None,
             since: None,
             before: None,
             larger: None,
@@ -700,6 +710,8 @@ mod tests {
             all_folders: false,
             subject: Some("test".into()),
             from: None,
+            to: None,
+            cc: None,
             since: None,
             before: None,
             larger: None,
@@ -715,6 +727,8 @@ mod tests {
             all_folders: false,
             subject: Some("invoice".into()),
             from: Some("user@example.com".into()),
+            to: None,
+            cc: None,
             since: None,
             before: None,
             larger: None,
@@ -727,12 +741,34 @@ mod tests {
     }
 
     #[test]
+    fn build_query_to_and_cc() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: None,
+            to: Some("alice@example.com".into()),
+            cc: Some("bob@example.com".into()),
+            since: None,
+            before: None,
+            larger: None,
+            limit: None,
+        };
+        assert_eq!(
+            build_query(&c).unwrap(),
+            "TO \"alice@example.com\" CC \"bob@example.com\""
+        );
+    }
+
+    #[test]
     fn build_query_date_range() {
         let c = SearchCriteria {
             folder: "INBOX".into(),
             all_folders: false,
             subject: None,
             from: None,
+            to: None,
+            cc: None,
             since: Some("2025-01-01".into()),
             before: Some("2025-12-31".into()),
             larger: None,
@@ -751,6 +787,8 @@ mod tests {
             all_folders: false,
             subject: None,
             from: None,
+            to: None,
+            cc: None,
             since: None,
             before: None,
             larger: Some("1M".into()),
@@ -766,6 +804,8 @@ mod tests {
             all_folders: false,
             subject: None,
             from: None,
+            to: None,
+            cc: None,
             since: Some("not-a-date".into()),
             before: None,
             larger: None,
@@ -781,6 +821,8 @@ mod tests {
             all_folders: false,
             subject: None,
             from: None,
+            to: None,
+            cc: None,
             since: None,
             before: None,
             larger: Some("abc".into()),

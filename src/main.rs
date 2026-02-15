@@ -118,6 +118,14 @@ struct FilterArgs {
     #[arg(long)]
     from: Option<String>,
 
+    /// To address contains
+    #[arg(long)]
+    to: Option<String>,
+
+    /// CC address contains
+    #[arg(long)]
+    cc: Option<String>,
+
     /// Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     #[arg(long)]
     since: Option<String>,
@@ -257,6 +265,8 @@ impl FilterArgs {
             all_folders: self.all_folders,
             subject: self.subject.clone(),
             from: self.from.clone(),
+            to: self.to.clone(),
+            cc: self.cc.clone(),
             since: self.since.clone(),
             before: self.before.clone(),
             larger: self.larger.clone(),

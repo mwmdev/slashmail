@@ -60,6 +60,26 @@ fn send_email_from(from: &str, to: &str, subject: &str, body: &str) {
     mailer.send(&email).unwrap();
 }
 
+fn send_email_with_cc(from: &str, to: &str, cc: &str, subject: &str, body: &str) {
+    let to_addr = user_email(to);
+    let cc_addr = user_email(cc);
+    let email = Message::builder()
+        .from(from.parse().unwrap())
+        .to(to_addr.parse().unwrap())
+        .cc(cc_addr.parse().unwrap())
+        .subject(subject)
+        .header(ContentType::TEXT_PLAIN)
+        .body(body.to_string())
+        .unwrap();
+
+    let mailer = SmtpTransport::builder_dangerous("127.0.0.1")
+        .port(smtp_port())
+        .tls(Tls::None)
+        .build();
+
+    mailer.send(&email).unwrap();
+}
+
 fn imap_connect(user: &str) -> ImapSession {
     // GreenMail auto-creates accounts; login with full email, password = email
     let email = user_email(user);
@@ -72,6 +92,8 @@ fn default_criteria(folder: &str) -> SearchCriteria {
         all_folders: false,
         subject: None,
         from: None,
+        to: None,
+        cc: None,
         since: None,
         before: None,
         larger: None,
@@ -167,6 +189,43 @@ fn search_by_from() {
 
     assert_eq!(results.len(), 1);
     assert!(results[0].from.contains("alice"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_to() {
+    let user = unique_user();
+    let user_addr = user_email(&user);
+    send_email_from("alice@localhost", &user, "For user", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.to = Some(user_addr);
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].subject.contains("For user"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_cc() {
+    let user = unique_user();
+    let cc_user = unique_user();
+    send_email_with_cc("alice@localhost", &user, &cc_user, "CC test", "body");
+    send_email_from("alice@localhost", &user, "No CC", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.cc = Some(user_email(&cc_user));
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].subject.contains("CC test"));
 
     session.logout().unwrap();
 }
