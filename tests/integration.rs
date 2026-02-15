@@ -370,7 +370,11 @@ fn search_by_date_range() {
     let mut criteria = default_criteria("INBOX");
     criteria.before = Some(today);
     let results = search::search(&mut session, &criteria).unwrap();
-    assert_eq!(results.len(), 0, "BEFORE today should exclude today's message");
+    assert_eq!(
+        results.len(),
+        0,
+        "BEFORE today should exclude today's message"
+    );
 
     // SINCE a far-future date should find nothing
     let mut criteria = default_criteria("INBOX");
@@ -634,7 +638,11 @@ fn export_multiple_folders_uid_collision() {
     let (exported, skipped) =
         export::export_messages(&mut session, &all_messages, "INBOX", &temp_dir, false).unwrap();
 
-    assert_eq!(exported + skipped, 2, "All messages should be accounted for");
+    assert_eq!(
+        exported + skipped,
+        2,
+        "All messages should be accounted for"
+    );
 
     // Count actual .eml files on disk
     let _entries: Vec<_> = std::fs::read_dir(&temp_dir)
@@ -817,7 +825,11 @@ fn search_all_folders_with_subject_filter() {
     all_criteria.subject = Some("Report".to_string());
     let results = search::search(&mut session, &all_criteria).unwrap();
 
-    assert_eq!(results.len(), 2, "Should find both Report messages across folders");
+    assert_eq!(
+        results.len(),
+        2,
+        "Should find both Report messages across folders"
+    );
     assert!(results.iter().all(|m| m.subject.contains("Report")));
 
     let folders: Vec<_> = results.iter().filter_map(|m| m.folder.as_deref()).collect();
