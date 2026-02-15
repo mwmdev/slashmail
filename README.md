@@ -103,6 +103,10 @@ All commands that operate on messages share the same filter options:
     --all-folders        Search across all folders (excludes Trash, Spam)
     --subject <TEXT>     Subject contains
     --from <TEXT>        From address contains
+    --to <TEXT>          To address contains
+    --cc <TEXT>          CC address contains
+    --seen               Only read messages
+    --unseen             Only unread messages
     --since <DATE>       Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     --before <DATE>      Messages before date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     --larger <SIZE>      Messages larger than N bytes (supports K/M suffix)
@@ -142,6 +146,13 @@ slashmail search -u user@example.com --since 3m --before 1m
 
 # Show only the 10 most recent matches
 slashmail search -u user@example.com --from "alerts" -n 10
+
+# Filter by recipient or CC
+slashmail search -u user@example.com --to "team@company.com"
+slashmail search -u user@example.com --cc "me@example.com"
+
+# Show only unread messages
+slashmail search -u user@example.com --unseen --since 7d
 
 # Search across all folders
 slashmail search -u user@example.com --all-folders --from "noreply"
