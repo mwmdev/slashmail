@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-02-15
+
+### Added
+
+- `--to` filter — search by To address
+- `--cc` filter — search by CC address
+- `--seen` filter — match only read messages
+- `--unseen` filter — match only unread messages (`--seen` and `--unseen` are mutually exclusive)
+
 ## [0.2.0] - 2026-02-13
 
 ### Added
@@ -47,5 +56,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
+[0.3.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.1.0
