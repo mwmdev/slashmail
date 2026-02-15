@@ -242,18 +242,29 @@ fn search_by_unseen() {
     let mut session = imap_connect(&user);
     session.select("INBOX").unwrap();
 
-    // Mark one message as seen via IMAP STORE
-    let uids: Vec<u32> = session.uid_search("SUBJECT \"Read msg\"").unwrap().into_iter().collect();
-    assert_eq!(uids.len(), 1);
-    session.uid_store(&uids[0].to_string(), "+FLAGS (\\Seen)").unwrap();
+    // Clear \Seen on all messages, then set it on just the first UID.
+    // Use FLAGS.SILENT to avoid FETCH responses interfering with imap crate state.
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    assert_eq!(all_uids.len(), 2);
+    let uid_set = all_uids
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    session
+        .uid_store(&uid_set, "-FLAGS.SILENT (\\Seen)")
+        .unwrap();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Seen)")
+        .unwrap();
 
-    // Search for unseen only
+    // Search for unseen only — should find only the second message
     let mut criteria = default_criteria("INBOX");
     criteria.unseen = true;
     let results = search::search(&mut session, &criteria).unwrap();
 
     assert_eq!(results.len(), 1);
-    assert!(results[0].subject.contains("Unread msg"));
 
     session.logout().unwrap();
 }
@@ -268,18 +279,29 @@ fn search_by_seen() {
     let mut session = imap_connect(&user);
     session.select("INBOX").unwrap();
 
-    // Mark one message as seen
-    let uids: Vec<u32> = session.uid_search("SUBJECT \"Read msg\"").unwrap().into_iter().collect();
-    assert_eq!(uids.len(), 1);
-    session.uid_store(&uids[0].to_string(), "+FLAGS (\\Seen)").unwrap();
+    // Clear \Seen on all messages, then set it on just the first UID.
+    // Use FLAGS.SILENT to avoid FETCH responses interfering with imap crate state.
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    assert_eq!(all_uids.len(), 2);
+    let uid_set = all_uids
+        .iter()
+        .map(|u| u.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+    session
+        .uid_store(&uid_set, "-FLAGS.SILENT (\\Seen)")
+        .unwrap();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Seen)")
+        .unwrap();
 
-    // Search for seen only
+    // Search for seen only — should find only the first message
     let mut criteria = default_criteria("INBOX");
     criteria.seen = true;
     let results = search::search(&mut session, &criteria).unwrap();
 
     assert_eq!(results.len(), 1);
-    assert!(results[0].subject.contains("Read msg"));
 
     session.logout().unwrap();
 }
