@@ -182,8 +182,6 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
         eprintln!("         Use --tls for remote servers.");
     }
 
-    let addr = format!("{host}:{port}");
-
     if tls {
         let tls_connector = native_tls::TlsConnector::builder()
             .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
@@ -191,15 +189,16 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
             .danger_accept_invalid_hostnames(false)
             .build()
             .context("Failed to create TLS connector")?;
-        let client = imap::connect((&*addr, port), host, &tls_connector)
-            .context("Failed to connect via TLS")?;
+        let client = imap::connect((host, port), host, &tls_connector)
+            .context(format!("Failed to TLS-connect to {host}:{port}"))?;
         let session = client
             .login(user, pass)
             .map_err(|e| e.0)
             .context("IMAP login failed")?;
         Ok(ImapSession::Tls(session))
     } else {
-        let tcp = TcpStream::connect(&addr).context(format!("Failed to connect to {addr}"))?;
+        let tcp = TcpStream::connect(format!("{host}:{port}"))
+            .context(format!("Failed to connect to {host}:{port}"))?;
         let client = imap::Client::new(tcp);
         let session = client
             .login(user, pass)
