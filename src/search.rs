@@ -500,9 +500,9 @@ pub fn search(session: &mut ImapSession, criteria: &SearchCriteria) -> Result<Ve
     }
 }
 
-fn ensure_folder_exists(session: &mut ImapSession, folder: &str) -> Result<()> {
+pub fn ensure_folder_exists(session: &mut ImapSession, folder: &str) -> Result<()> {
     let folders = session
-        .list(Some(""), Some("*"))
+        .list(Some(""), Some(folder))
         .context("Failed to list folders")?;
     let exists = folders.iter().any(|f| f.name() == folder);
     if !exists {

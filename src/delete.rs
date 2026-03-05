@@ -1,4 +1,4 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
@@ -16,20 +16,6 @@ fn spinner(msg: &str) -> ProgressBar {
     pb.set_message(msg.to_string());
     pb.enable_steady_tick(Duration::from_millis(80));
     pb
-}
-
-/// Check that a destination folder exists on the server.
-fn ensure_folder_exists(session: &mut ImapSession, folder: &str) -> Result<()> {
-    let folders = session
-        .list(Some(""), Some("*"))
-        .context("Failed to list folders")?;
-    let exists = folders.iter().any(|f| f.name() == folder);
-    if !exists {
-        bail!(
-            "Folder '{folder}' does not exist. Use `slashmail status` to list available folders."
-        );
-    }
-    Ok(())
 }
 
 pub fn search_and_move(
@@ -58,7 +44,7 @@ pub fn search_and_move(
         return Ok(());
     }
 
-    ensure_folder_exists(session, dest)?;
+    search::ensure_folder_exists(session, dest)?;
 
     if !yes {
         let confirm =

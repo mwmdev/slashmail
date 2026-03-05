@@ -705,6 +705,58 @@ fn delete_to_nonexistent_trash_fails() {
     session.logout().unwrap();
 }
 
+#[test]
+fn ensure_folder_exists_returns_error_for_missing_folder() {
+    let user = unique_user();
+    send_email(&user, "Folder check test", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let result = search::ensure_folder_exists(&mut session, "NoSuchFolder");
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("does not exist"),
+        "Expected 'does not exist' message, got: {err_msg}"
+    );
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn ensure_folder_exists_finds_created_folder() {
+    let user = unique_user();
+    send_email(&user, "Subfolder check test", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.create("Archive").unwrap();
+
+    let result = search::ensure_folder_exists(&mut session, "Archive");
+    assert!(result.is_ok(), "Archive folder should exist");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_nonexistent_folder_gives_helpful_error() {
+    let user = unique_user();
+    send_email(&user, "Bad folder test", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let criteria = default_criteria("DoesNotExist");
+    let result = search::search(&mut session, &criteria);
+    assert!(result.is_err());
+    let err_msg = format!("{}", result.unwrap_err());
+    assert!(
+        err_msg.contains("does not exist"),
+        "Expected 'does not exist' message, got: {err_msg}"
+    );
+
+    session.logout().unwrap();
+}
+
 // --- Mark tests ---
 
 #[test]
