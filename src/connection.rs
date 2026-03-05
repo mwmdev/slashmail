@@ -1,13 +1,19 @@
 use anyhow::{Context, Result};
 use imap::Session;
+use std::collections::HashSet;
 use std::net::TcpStream;
 
 pub type PlainSession = Session<TcpStream>;
 pub type TlsSession = Session<native_tls::TlsStream<TcpStream>>;
 
-pub enum ImapSession {
+enum Inner {
     Plain(PlainSession),
     Tls(TlsSession),
+}
+
+pub struct ImapSession {
+    inner: Inner,
+    capabilities: HashSet<String>,
 }
 
 impl ImapSession {
@@ -16,23 +22,23 @@ impl ImapSession {
         reference: Option<&str>,
         pattern: Option<&str>,
     ) -> imap::error::Result<imap::types::ZeroCopy<Vec<imap::types::Name>>> {
-        match self {
-            ImapSession::Plain(s) => s.list(reference, pattern),
-            ImapSession::Tls(s) => s.list(reference, pattern),
+        match &mut self.inner {
+            Inner::Plain(s) => s.list(reference, pattern),
+            Inner::Tls(s) => s.list(reference, pattern),
         }
     }
 
     pub fn create(&mut self, mailbox: &str) -> imap::error::Result<()> {
-        match self {
-            ImapSession::Plain(s) => s.create(mailbox),
-            ImapSession::Tls(s) => s.create(mailbox),
+        match &mut self.inner {
+            Inner::Plain(s) => s.create(mailbox),
+            Inner::Tls(s) => s.create(mailbox),
         }
     }
 
     pub fn select(&mut self, mailbox: &str) -> imap::error::Result<imap::types::Mailbox> {
-        match self {
-            ImapSession::Plain(s) => s.select(mailbox),
-            ImapSession::Tls(s) => s.select(mailbox),
+        match &mut self.inner {
+            Inner::Plain(s) => s.select(mailbox),
+            Inner::Tls(s) => s.select(mailbox),
         }
     }
 
@@ -40,9 +46,9 @@ impl ImapSession {
         &mut self,
         query: &str,
     ) -> imap::error::Result<std::collections::HashSet<u32>> {
-        match self {
-            ImapSession::Plain(s) => s.uid_search(query),
-            ImapSession::Tls(s) => s.uid_search(query),
+        match &mut self.inner {
+            Inner::Plain(s) => s.uid_search(query),
+            Inner::Tls(s) => s.uid_search(query),
         }
     }
 
@@ -51,26 +57,26 @@ impl ImapSession {
         uid_set: &str,
         query: &str,
     ) -> imap::error::Result<imap::types::ZeroCopy<Vec<imap::types::Fetch>>> {
-        match self {
-            ImapSession::Plain(s) => s.uid_fetch(uid_set, query),
-            ImapSession::Tls(s) => s.uid_fetch(uid_set, query),
+        match &mut self.inner {
+            Inner::Plain(s) => s.uid_fetch(uid_set, query),
+            Inner::Tls(s) => s.uid_fetch(uid_set, query),
         }
     }
 
     pub fn uid_mv(&mut self, uid_set: &str, dest: &str) -> imap::error::Result<()> {
-        match self {
-            ImapSession::Plain(s) => s.uid_mv(uid_set, dest),
-            ImapSession::Tls(s) => s.uid_mv(uid_set, dest),
+        match &mut self.inner {
+            Inner::Plain(s) => s.uid_mv(uid_set, dest),
+            Inner::Tls(s) => s.uid_mv(uid_set, dest),
         }
     }
 
     pub fn uid_copy(&mut self, uid_set: &str, dest: &str) -> imap::error::Result<()> {
-        match self {
-            ImapSession::Plain(s) => {
+        match &mut self.inner {
+            Inner::Plain(s) => {
                 s.uid_copy(uid_set, dest)?;
                 Ok(())
             }
-            ImapSession::Tls(s) => {
+            Inner::Tls(s) => {
                 s.uid_copy(uid_set, dest)?;
                 Ok(())
             }
@@ -78,12 +84,12 @@ impl ImapSession {
     }
 
     pub fn uid_store(&mut self, uid_set: &str, query: &str) -> imap::error::Result<()> {
-        match self {
-            ImapSession::Plain(s) => {
+        match &mut self.inner {
+            Inner::Plain(s) => {
                 s.uid_store(uid_set, query)?;
                 Ok(())
             }
-            ImapSession::Tls(s) => {
+            Inner::Tls(s) => {
                 s.uid_store(uid_set, query)?;
                 Ok(())
             }
@@ -91,12 +97,12 @@ impl ImapSession {
     }
 
     pub fn expunge(&mut self) -> imap::error::Result<()> {
-        match self {
-            ImapSession::Plain(s) => {
+        match &mut self.inner {
+            Inner::Plain(s) => {
                 s.expunge()?;
                 Ok(())
             }
-            ImapSession::Tls(s) => {
+            Inner::Tls(s) => {
                 s.expunge()?;
                 Ok(())
             }
@@ -104,24 +110,20 @@ impl ImapSession {
     }
 
     pub fn logout(&mut self) -> imap::error::Result<()> {
-        match self {
-            ImapSession::Plain(s) => s.logout(),
-            ImapSession::Tls(s) => s.logout(),
+        match &mut self.inner {
+            Inner::Plain(s) => s.logout(),
+            Inner::Tls(s) => s.logout(),
         }
     }
 
-    pub fn has_capability(&mut self, cap: &str) -> bool {
-        let caps = match self {
-            ImapSession::Plain(s) => s.capabilities(),
-            ImapSession::Tls(s) => s.capabilities(),
-        };
-        caps.map(|c| c.has_str(cap)).unwrap_or(false)
+    pub fn has_capability(&self, cap: &str) -> bool {
+        self.capabilities.contains(&cap.to_uppercase())
     }
 
     pub fn run_command_and_read_response(&mut self, command: &str) -> imap::error::Result<Vec<u8>> {
-        match self {
-            ImapSession::Plain(s) => s.run_command_and_read_response(command),
-            ImapSession::Tls(s) => s.run_command_and_read_response(command),
+        match &mut self.inner {
+            Inner::Plain(s) => s.run_command_and_read_response(command),
+            Inner::Tls(s) => s.run_command_and_read_response(command),
         }
     }
 
@@ -182,7 +184,7 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
         eprintln!("         Use --tls for remote servers.");
     }
 
-    if tls {
+    let mut session = if tls {
         let tls_connector = native_tls::TlsConnector::builder()
             .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
             .danger_accept_invalid_certs(false)
@@ -191,19 +193,36 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
             .context("Failed to create TLS connector")?;
         let client = imap::connect((host, port), host, &tls_connector)
             .context(format!("Failed to TLS-connect to {host}:{port}"))?;
-        let session = client
+        let s = client
             .login(user, pass)
             .map_err(|e| e.0)
             .context("IMAP login failed")?;
-        Ok(ImapSession::Tls(session))
+        Inner::Tls(s)
     } else {
         let tcp = TcpStream::connect(format!("{host}:{port}"))
             .context(format!("Failed to connect to {host}:{port}"))?;
         let client = imap::Client::new(tcp);
-        let session = client
+        let s = client
             .login(user, pass)
             .map_err(|e| e.0)
             .context("IMAP login failed")?;
-        Ok(ImapSession::Plain(session))
+        Inner::Plain(s)
+    };
+
+    let caps = match &mut session {
+        Inner::Plain(s) => s.capabilities(),
+        Inner::Tls(s) => s.capabilities(),
     }
+    .context("Failed to fetch capabilities")?;
+    let capabilities = ["SORT", "MOVE", "QUOTA"]
+        .iter()
+        .filter(|c| caps.has_str(**c))
+        .map(|c| c.to_string())
+        .collect();
+    drop(caps);
+
+    Ok(ImapSession {
+        inner: session,
+        capabilities,
+    })
 }
