@@ -748,7 +748,7 @@ fn search_nonexistent_folder_gives_helpful_error() {
     let criteria = default_criteria("DoesNotExist");
     let result = search::search(&mut session, &criteria);
     assert!(result.is_err());
-    let err_msg = format!("{}", result.unwrap_err());
+    let err_msg = format!("{}", result.err().unwrap());
     assert!(
         err_msg.contains("does not exist"),
         "Expected 'does not exist' message, got: {err_msg}"
