@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.3.1] - 2026-03-05
+
+### Fixed
+
+- Export UID collision — multi-folder exports no longer silently overwrite files when UIDs collide across folders (filenames now prefixed with folder name)
+- SORT response parsing — no longer false-positives on server responses containing "BAD" or "NO" as substrings (e.g. `OK [BADCHARSET]`)
+
+### Changed
+
+- IMAP capabilities cached at connect time, eliminating a CAPABILITY round-trip per folder/chunk
+- `ensure_folder_exists` uses targeted `LIST "" <folder>` instead of `LIST "" *`
+- `ensure_folder_exists` deduplicated between search and delete modules
+
 ## [0.3.0] - 2026-02-15
 
 ### Added
@@ -56,6 +69,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
+[0.3.1]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.1
 [0.3.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.0
 [0.2.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.2.0
 [0.1.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.1.0
