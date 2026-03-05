@@ -238,9 +238,14 @@ fn parse_sort_response(data: &[u8]) -> Result<Vec<u32>> {
                 }
             }
         }
-        // Check for error in tagged response
-        if (line.contains("BAD") || line.contains("NO")) && !line.starts_with('*') {
-            bail!("SORT command rejected by server: {line}");
+        // Check for error in tagged response (format: "tag NO ..." or "tag BAD ...")
+        if !line.starts_with('*') {
+            let mut tokens = line.splitn(3, ' ');
+            if let (Some(_tag), Some(status)) = (tokens.next(), tokens.next()) {
+                if status == "NO" || status == "BAD" {
+                    bail!("SORT command rejected by server: {line}");
+                }
+            }
         }
     }
 
@@ -914,6 +919,16 @@ mod tests {
     fn parse_sort_response_server_error() {
         let data = b"A001 BAD Unknown command\r\n";
         assert!(parse_sort_response(data).is_err());
+        let data = b"A001 NO SORT not supported\r\n";
+        assert!(parse_sort_response(data).is_err());
+    }
+
+    #[test]
+    fn parse_sort_response_ok_with_bad_substring() {
+        // "BADCHARSET" contains "BAD" but the status token is "OK"
+        let data = b"* SORT 1 2 3\r\nA001 OK [BADCHARSET] Completed\r\n";
+        let uids = parse_sort_response(data).unwrap();
+        assert_eq!(uids, vec![1, 2, 3]);
     }
 
     #[test]
