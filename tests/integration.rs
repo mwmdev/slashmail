@@ -650,7 +650,11 @@ fn export_multiple_folders_uid_collision() {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "eml"))
         .collect();
-    assert_eq!(entries.len(), 2, "Both messages should exist as separate files");
+    assert_eq!(
+        entries.len(),
+        2,
+        "Both messages should exist as separate files"
+    );
     let _ = std::fs::remove_dir_all(&temp_dir);
     session.logout().unwrap();
 }

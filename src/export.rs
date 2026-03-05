@@ -37,7 +37,13 @@ pub fn export_messages(
 
         let safe_folder: String = folder
             .chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect();
 
         for chunk in &search::build_uid_set(uids) {
