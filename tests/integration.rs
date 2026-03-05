@@ -644,16 +644,13 @@ fn export_multiple_folders_uid_collision() {
         "All messages should be accounted for"
     );
 
-    // Count actual .eml files on disk
-    let _entries: Vec<_> = std::fs::read_dir(&temp_dir)
+    // Count actual .eml files on disk — folder-prefixed filenames prevent UID collisions
+    let entries: Vec<_> = std::fs::read_dir(&temp_dir)
         .unwrap()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().map_or(false, |ext| ext == "eml"))
         .collect();
-
-    // NOTE: If UIDs collide across folders, the second write overwrites the first,
-    // so exported=2 but only 1 file on disk. This documents the known bug.
-    // When the bug is fixed (folder-prefixed filenames), both asserts become 2.
+    assert_eq!(entries.len(), 2, "Both messages should exist as separate files");
     let _ = std::fs::remove_dir_all(&temp_dir);
     session.logout().unwrap();
 }

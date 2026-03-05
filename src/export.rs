@@ -35,6 +35,11 @@ pub fn export_messages(
             .select(folder)
             .with_context(|| format!("Failed to select '{folder}'"))?;
 
+        let safe_folder: String = folder
+            .chars()
+            .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+            .collect();
+
         for chunk in &search::build_uid_set(uids) {
             let fetches = session
                 .uid_fetch(chunk, "BODY.PEEK[]")
@@ -46,7 +51,7 @@ pub fn export_messages(
                     None => continue,
                 };
                 if let Some(body) = fetch.body() {
-                    let path = out_dir.join(format!("{uid}.eml"));
+                    let path = out_dir.join(format!("{safe_folder}_{uid}.eml"));
                     if path.exists() && !force {
                         skipped += 1;
                         continue;
