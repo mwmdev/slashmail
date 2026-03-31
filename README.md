@@ -209,6 +209,28 @@ slashmail completions zsh > ~/.zfunc/_slashmail
 slashmail completions fish > ~/.config/fish/completions/slashmail.fish
 ```
 
+## AI Agent Skill
+
+slashmail includes a skill file (`skills/slashmail/SKILL.md`) that teaches AI agents how to manage your email through natural language.
+
+**Claude Code** — copy the skill into your skills directory:
+
+```bash
+mkdir -p ~/.claude/skills/slashmail
+cp skills/slashmail/SKILL.md ~/.claude/skills/slashmail/
+```
+
+**Other agents** — paste the contents of `skills/slashmail/SKILL.md` into your agent's system prompt or tool definitions.
+
+Once installed, prompts like these just work:
+
+```
+> Check my latest emails
+> Delete newsletters from noreply@example.com older than 3 months
+```
+
+Destructive operations always dry-run first and ask for confirmation.
+
 ## Tested with
 
 - Gmail (via `--tls --host imap.gmail.com`)
