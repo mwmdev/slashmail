@@ -30,6 +30,7 @@ indicatif = "0.17"
 regex = "1"
 zeroize = "1"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
+html2text = "0.15.5"
 
 [features]
 vendored-openssl = ["openssl"]

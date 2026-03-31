@@ -1,4 +1,4 @@
-use slashmail::{config, connection, delete, display, export, search};
+use slashmail::{config, connection, delete, display, export, read, search};
 
 use anyhow::{bail, Context, Result};
 use clap::{CommandFactory, Parser, Subcommand};
@@ -75,6 +75,8 @@ struct Cli {
 enum Commands {
     /// Search messages by criteria
     Search(SearchArgs),
+    /// Display the content of matching messages
+    Read(ReadArgs),
     /// Search + delete matching messages (move to Trash)
     Delete(DeleteArgs),
     /// Search + move matching messages to a folder
@@ -153,6 +155,16 @@ struct SearchArgs {
     filter: FilterArgs,
 
     /// Limit number of results
+    #[arg(short = 'n', long)]
+    limit: Option<usize>,
+}
+
+#[derive(Parser)]
+struct ReadArgs {
+    #[command(flatten)]
+    filter: FilterArgs,
+
+    /// Limit number of messages to display [default: 1]
     #[arg(short = 'n', long)]
     limit: Option<usize>,
 }
@@ -747,6 +759,22 @@ fn main() -> Result<()> {
             sp.finish_and_clear();
             display::display_messages(&messages);
             Ok(())
+        }
+        Commands::Read(args) => {
+            let limit = args.limit.or(Some(1));
+            let criteria = args.filter.to_criteria(limit, &default_folder);
+            let sp = spinner("Searching...");
+            let messages = search::search(&mut session, &criteria)?;
+            sp.finish_and_clear();
+            if messages.is_empty() {
+                println!("No messages found.");
+                Ok(())
+            } else {
+                let sp = spinner("Fetching...");
+                let r = read::read_messages(&mut session, &messages, &criteria.folder);
+                sp.finish_and_clear();
+                r
+            }
         }
         Commands::Delete(args) => {
             let criteria = args.filter.to_criteria(args.limit, &default_folder);
