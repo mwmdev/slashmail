@@ -1,5 +1,6 @@
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, ContentArrangement, Table};
 
+#[derive(serde::Serialize)]
 pub struct MessageRow {
     pub uid: u32,
     pub folder: Option<String>,
@@ -53,6 +54,53 @@ mod tests {
     fn format_size_megabytes_large() {
         assert_eq!(format_size(5_242_880), "5.0M");
     }
+
+    #[test]
+    fn json_empty() {
+        let messages: Vec<MessageRow> = vec![];
+        let json = serde_json::to_string(&messages).unwrap();
+        assert_eq!(json, "[]");
+    }
+
+    #[test]
+    fn json_single_message() {
+        let messages = vec![MessageRow {
+            uid: 42,
+            folder: None,
+            from: "alice@example.com".into(),
+            subject: "Test".into(),
+            date: "Mon, 1 Apr 2026".into(),
+            timestamp: 1774000000,
+            size: 1024,
+        }];
+        let json = serde_json::to_string(&messages).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["uid"], 42);
+        assert_eq!(parsed[0]["from"], "alice@example.com");
+        assert_eq!(parsed[0]["subject"], "Test");
+        assert_eq!(parsed[0]["size"], 1024);
+        assert!(parsed[0]["folder"].is_null());
+    }
+
+    #[test]
+    fn json_with_folder() {
+        let messages = vec![MessageRow {
+            uid: 1,
+            folder: Some("INBOX".into()),
+            from: "bob@example.com".into(),
+            subject: "Hi".into(),
+            date: "Tue, 2 Apr 2026".into(),
+            timestamp: 1774100000,
+            size: 512,
+        }];
+        let json = serde_json::to_string(&messages).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["folder"], "INBOX");
+    }
+}
+
+pub fn display_messages_json(messages: &[MessageRow]) {
+    println!("{}", serde_json::to_string(messages).unwrap());
 }
 
 pub fn display_messages(messages: &[MessageRow]) {

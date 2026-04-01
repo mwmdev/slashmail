@@ -168,6 +168,10 @@ slashmail search -u user@example.com --body "invoice attached"
 # Search everywhere (headers + body)
 slashmail search -u user@example.com --text "quarterly report"
 
+# JSON output for scripting (search and count only)
+slashmail search -u user@example.com --from "alerts" --json | jq '.[].subject'
+slashmail count -u user@example.com --json
+
 # Search across all folders
 slashmail search -u user@example.com --all-folders --from "noreply"
 

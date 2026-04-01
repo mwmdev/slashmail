@@ -43,9 +43,9 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 
 | Command | Description | Extra flags |
 |---------|-------------|-------------|
-| `search` | Retrieve messages (sorted newest-first) | — |
+| `search` | Retrieve messages (sorted newest-first) | `--json` |
 | `read` | Display message content in terminal | — |
-| `count` | Fast count without fetching content | — |
+| `count` | Fast count without fetching content | `--json` |
 | `delete` | Move to Trash | `--trash-folder NAME`, `--dry-run`, `--yes` |
 | `move` | Move to folder | `--to DEST`, `--dry-run`, `--yes` |
 | `mark` | Set/unset flags | `--read/--unread`, `--flagged/--unflagged`, `--dry-run`, `--yes` |

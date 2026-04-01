@@ -185,6 +185,10 @@ struct SearchArgs {
     /// Limit number of results
     #[arg(short = 'n', long)]
     limit: Option<usize>,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -301,6 +305,10 @@ struct MarkArgs {
 struct CountArgs {
     #[command(flatten)]
     filter: FilterArgs,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 impl FilterArgs {
@@ -712,7 +720,16 @@ fn cmd_count(
 
         sp.finish_and_clear();
 
-        if results.is_empty() {
+        if args.json {
+            let folders: Vec<serde_json::Value> = results
+                .iter()
+                .map(|(f, c)| serde_json::json!({"folder": f, "count": c}))
+                .collect();
+            println!(
+                "{}",
+                serde_json::json!({"folders": folders, "total": grand_total})
+            );
+        } else if results.is_empty() {
             println!("0 message(s) match.");
         } else {
             for (folder, count) in &results {
@@ -729,7 +746,14 @@ fn cmd_count(
 
         let uids = session.uid_search(&query).context("IMAP SEARCH failed")?;
         sp.finish_and_clear();
-        println!("{} message(s) in {}", uids.len(), criteria.folder);
+        if args.json {
+            println!(
+                "{}",
+                serde_json::json!({"folder": criteria.folder, "count": uids.len()})
+            );
+        } else {
+            println!("{} message(s) in {}", uids.len(), criteria.folder);
+        }
     }
 
     Ok(())
@@ -792,7 +816,11 @@ fn main() -> Result<()> {
             let sp = spinner("Searching...");
             let messages = search::search(&mut session, &criteria)?;
             sp.finish_and_clear();
-            display::display_messages(&messages);
+            if args.json {
+                display::display_messages_json(&messages);
+            } else {
+                display::display_messages(&messages);
+            }
             Ok(())
         }
         Commands::Read(args) => {
