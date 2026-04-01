@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/mwmdev/slashmail/actions/workflows/ci.yml/badge.svg)](https://github.com/mwmdev/slashmail/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/slashmail)](https://crates.io/crates/slashmail)
+[![MSRV](https://img.shields.io/badge/MSRV-1.83-blue)](https://www.rust-lang.org)
+[![Crate Size](https://img.shields.io/crates/size/slashmail)](https://crates.io/crates/slashmail)
 [![License](https://img.shields.io/crates/l/slashmail)](LICENSE-MIT)
 
 CLI for searching, managing, and bulk-operating on emails via IMAP.
