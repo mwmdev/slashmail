@@ -11,6 +11,8 @@ pub struct SearchCriteria {
     pub from: Option<String>,
     pub to: Option<String>,
     pub cc: Option<String>,
+    pub body: Option<String>,
+    pub text: Option<String>,
     pub seen: bool,
     pub unseen: bool,
     pub since: Option<String>,
@@ -162,6 +164,12 @@ pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     }
     if let Some(ref cc) = criteria.cc {
         parts.push(format!("CC {}", imap_quote(cc)));
+    }
+    if let Some(ref body) = criteria.body {
+        parts.push(format!("BODY {}", imap_quote(body)));
+    }
+    if let Some(ref text) = criteria.text {
+        parts.push(format!("TEXT {}", imap_quote(text)));
     }
     if criteria.seen {
         parts.push("SEEN".to_string());
@@ -708,6 +716,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: None,
@@ -727,6 +737,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: None,
@@ -746,6 +758,8 @@ mod tests {
             from: Some("user@example.com".into()),
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: None,
@@ -768,6 +782,8 @@ mod tests {
             from: None,
             to: Some("alice@example.com".into()),
             cc: Some("bob@example.com".into()),
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: None,
@@ -790,6 +806,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: true,
             unseen: false,
             since: None,
@@ -809,6 +827,8 @@ mod tests {
             from: Some("alice@example.com".into()),
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: true,
             since: None,
@@ -831,6 +851,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: Some("2025-01-01".into()),
@@ -853,6 +875,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: None,
@@ -872,6 +896,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: Some("not-a-date".into()),
@@ -891,6 +917,8 @@ mod tests {
             from: None,
             to: None,
             cc: None,
+            body: None,
+            text: None,
             seen: false,
             unseen: false,
             since: None,
@@ -978,5 +1006,71 @@ mod tests {
         for chunk in &chunks {
             assert!(chunk.len() <= MAX_UID_SET_LENGTH);
         }
+    }
+
+    #[test]
+    fn build_query_body_only() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: None,
+            to: None,
+            cc: None,
+            body: Some("invoice".into()),
+            text: None,
+            seen: false,
+            unseen: false,
+            since: None,
+            before: None,
+            larger: None,
+            limit: None,
+        };
+        assert_eq!(build_query(&c).unwrap(), "BODY \"invoice\"");
+    }
+
+    #[test]
+    fn build_query_text_only() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: None,
+            to: None,
+            cc: None,
+            body: None,
+            text: Some("meeting".into()),
+            seen: false,
+            unseen: false,
+            since: None,
+            before: None,
+            larger: None,
+            limit: None,
+        };
+        assert_eq!(build_query(&c).unwrap(), "TEXT \"meeting\"");
+    }
+
+    #[test]
+    fn build_query_body_with_subject() {
+        let c = SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: Some("report".into()),
+            from: None,
+            to: None,
+            cc: None,
+            body: Some("quarterly".into()),
+            text: None,
+            seen: false,
+            unseen: false,
+            since: None,
+            before: None,
+            larger: None,
+            limit: None,
+        };
+        assert_eq!(
+            build_query(&c).unwrap(),
+            "SUBJECT \"report\" BODY \"quarterly\""
+        );
     }
 }

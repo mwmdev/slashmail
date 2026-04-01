@@ -25,6 +25,8 @@ SLASHMAIL_PASS="$SLASHMAIL_PASS" slashmail <command>
 | `--from TEXT` | Filter by sender |
 | `--to TEXT` | Filter by recipient |
 | `--cc TEXT` | Filter by CC |
+| `--body TEXT` | Search message body |
+| `--text TEXT` | Search headers and body |
 | `--seen` / `--unseen` | Filter by read status |
 | `--since DATE` | Messages after date |
 | `--before DATE` | Messages before date |
@@ -38,6 +40,7 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 | Command | Description | Extra flags |
 |---------|-------------|-------------|
 | `search` | Retrieve messages (sorted newest-first) | — |
+| `read` | Display message content in terminal | — |
 | `count` | Fast count without fetching content | — |
 | `delete` | Move to Trash | `--trash-folder NAME`, `--dry-run`, `--yes` |
 | `move` | Move to folder | `--to DEST`, `--dry-run`, `--yes` |
@@ -59,4 +62,7 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 **Find emails from someone**: `slashmail search --from "name@example.com" --limit 20`
 **Recent emails**: `slashmail search --since 1d --limit 20`
 **Mailbox overview**: `slashmail status`
+**Search email content**: `slashmail search --body "invoice" --since 1m`
+**Search everywhere**: `slashmail search --text "quarterly report"`
+**Read a message**: `slashmail read --from "boss@example.com" --limit 1`
 **Clean up old newsletters**: `slashmail delete --from "newsletter@" --before 3m --dry-run` then confirm with user before running without `--dry-run`

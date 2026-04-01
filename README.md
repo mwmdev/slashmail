@@ -47,6 +47,7 @@ slashmail [OPTIONS] <COMMAND>
 
 Commands:
   search   Search messages by criteria
+  read     Display the content of matching messages
   delete   Search + delete matching messages (move to Trash)
   move     Search + move matching messages to a folder
   export   Search + export matching messages as .eml files
@@ -105,6 +106,8 @@ All commands that operate on messages share the same filter options:
     --from <TEXT>        From address contains
     --to <TEXT>          To address contains
     --cc <TEXT>          CC address contains
+    --body <TEXT>        Message body contains
+    --text <TEXT>        Headers or body contains
     --seen               Only read messages
     --unseen             Only unread messages
     --since <DATE>       Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
@@ -153,6 +156,12 @@ slashmail search -u user@example.com --cc "me@example.com"
 
 # Show only unread messages
 slashmail search -u user@example.com --unseen --since 7d
+
+# Search message body content
+slashmail search -u user@example.com --body "invoice attached"
+
+# Search everywhere (headers + body)
+slashmail search -u user@example.com --text "quarterly report"
 
 # Search across all folders
 slashmail search -u user@example.com --all-folders --from "noreply"

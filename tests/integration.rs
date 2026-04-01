@@ -94,6 +94,8 @@ fn default_criteria(folder: &str) -> SearchCriteria {
         from: None,
         to: None,
         cc: None,
+        body: None,
+        text: None,
         seen: false,
         unseen: false,
         since: None,
@@ -1047,6 +1049,50 @@ fn search_all_folders_skips_trash() {
         "Should only find INBOX message, Trash should be skipped"
     );
     assert!(all_results[0].subject.contains("Keep me"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_body() {
+    let user = unique_user();
+    send_email(&user, "Body test A", "The quick brown fox jumps over the lazy dog");
+    send_email(&user, "Body test B", "Nothing interesting here");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.body = Some("quick brown fox".into());
+
+    let results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].subject.contains("Body test A"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_text() {
+    let user = unique_user();
+    send_email(&user, "Text test msg", "Unique payload xylophone");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+
+    // TEXT searches headers + body, so searching the body content should match
+    let mut criteria = default_criteria("INBOX");
+    criteria.text = Some("xylophone".into());
+
+    let results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(results.len(), 1);
+    assert!(results[0].subject.contains("Text test msg"));
+
+    // TEXT also searches headers, so searching the subject should match too
+    let mut criteria2 = default_criteria("INBOX");
+    criteria2.text = Some("Text test msg".into());
+
+    let results2 = search::search(&mut session, &criteria2).unwrap();
+    assert_eq!(results2.len(), 1);
 
     session.logout().unwrap();
 }

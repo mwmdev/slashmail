@@ -128,6 +128,14 @@ struct FilterArgs {
     #[arg(long)]
     cc: Option<String>,
 
+    /// Message body contains
+    #[arg(long)]
+    body: Option<String>,
+
+    /// Headers or body contains
+    #[arg(long)]
+    text: Option<String>,
+
     /// Only read messages
     #[arg(long, conflicts_with = "unseen")]
     seen: bool,
@@ -287,6 +295,8 @@ impl FilterArgs {
             from: self.from.clone(),
             to: self.to.clone(),
             cc: self.cc.clone(),
+            body: self.body.clone(),
+            text: self.text.clone(),
             seen: self.seen,
             unseen: self.unseen,
             since: self.since.clone(),
