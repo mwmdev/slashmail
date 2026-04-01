@@ -39,7 +39,7 @@ integration-tests = []
 
 [dev-dependencies]
 lettre = "0.11"
-tempfile = "3"
+tempfile = ">=3,<3.25"
 
 [patch.crates-io]
 imap-proto = { path = "patches/imap-proto" }
