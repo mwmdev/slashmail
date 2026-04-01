@@ -9,7 +9,13 @@ use crate::search;
 pub fn sanitize_folder_name(folder: &str) -> String {
     folder
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '-' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 

@@ -1061,7 +1061,11 @@ fn search_all_folders_skips_trash() {
 #[test]
 fn search_by_body() {
     let user = unique_user();
-    send_email(&user, "Body test A", "The quick brown fox jumps over the lazy dog");
+    send_email(
+        &user,
+        "Body test A",
+        "The quick brown fox jumps over the lazy dog",
+    );
     send_email(&user, "Body test B", "Nothing interesting here");
     sleep_for_delivery();
 
