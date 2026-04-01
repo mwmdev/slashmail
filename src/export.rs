@@ -5,6 +5,14 @@ use crate::connection::ImapSession;
 use crate::display::MessageRow;
 use crate::search;
 
+/// Sanitize folder name for use in filenames: keep alphanumerics and hyphens, replace rest with `_`.
+pub fn sanitize_folder_name(folder: &str) -> String {
+    folder
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' { c } else { '_' })
+        .collect()
+}
+
 /// Export messages to .eml files. Returns (exported, skipped) counts.
 pub fn export_messages(
     session: &mut ImapSession,
@@ -35,16 +43,7 @@ pub fn export_messages(
             .select(folder)
             .with_context(|| format!("Failed to select '{folder}'"))?;
 
-        let safe_folder: String = folder
-            .chars()
-            .map(|c| {
-                if c.is_alphanumeric() || c == '-' {
-                    c
-                } else {
-                    '_'
-                }
-            })
-            .collect();
+        let safe_folder = sanitize_folder_name(folder);
 
         for chunk in &search::build_uid_set(uids) {
             let fetches = session
@@ -71,4 +70,47 @@ pub fn export_messages(
     }
 
     Ok((exported, skipped))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_folder_name_simple() {
+        assert_eq!(sanitize_folder_name("INBOX"), "INBOX");
+    }
+
+    #[test]
+    fn sanitize_folder_name_with_slash() {
+        assert_eq!(sanitize_folder_name("[Gmail]/Trash"), "_Gmail__Trash");
+    }
+
+    #[test]
+    fn sanitize_folder_name_with_spaces() {
+        assert_eq!(sanitize_folder_name("Sent Items"), "Sent_Items");
+    }
+
+    #[test]
+    fn sanitize_folder_name_preserves_hyphens() {
+        assert_eq!(sanitize_folder_name("my-folder"), "my-folder");
+    }
+
+    #[test]
+    fn sanitize_folder_name_empty() {
+        assert_eq!(sanitize_folder_name(""), "");
+    }
+
+    #[test]
+    fn sanitize_folder_name_dots_and_special() {
+        assert_eq!(sanitize_folder_name("INBOX.Drafts"), "INBOX_Drafts");
+        assert_eq!(sanitize_folder_name("Work/Projects"), "Work_Projects");
+    }
+
+    #[test]
+    fn eml_filename_format() {
+        let safe = sanitize_folder_name("[Gmail]/All Mail");
+        let filename = format!("{safe}_{}.eml", 42);
+        assert_eq!(filename, "_Gmail__All_Mail_42.eml");
+    }
 }

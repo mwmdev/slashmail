@@ -1574,6 +1574,7 @@ dependencies = [
  "openssl",
  "regex",
  "serde",
+ "tempfile",
  "toml",
  "zeroize",
 ]

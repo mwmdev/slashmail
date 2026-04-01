@@ -1096,3 +1096,58 @@ fn search_by_text() {
 
     session.logout().unwrap();
 }
+
+#[test]
+fn export_skip_existing() {
+    let user = unique_user();
+    send_email(&user, "Export skip test", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1);
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    // First export succeeds
+    let (exported, skipped) =
+        export::export_messages(&mut session, &messages, "INBOX", tmp.path(), false).unwrap();
+    assert_eq!(exported, 1);
+    assert_eq!(skipped, 0);
+
+    // Second export without force skips the existing file
+    let (exported, skipped) =
+        export::export_messages(&mut session, &messages, "INBOX", tmp.path(), false).unwrap();
+    assert_eq!(exported, 0);
+    assert_eq!(skipped, 1);
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn export_force_overwrite() {
+    let user = unique_user();
+    send_email(&user, "Export force test", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1);
+
+    let tmp = tempfile::tempdir().unwrap();
+
+    // First export
+    let (exported, _) =
+        export::export_messages(&mut session, &messages, "INBOX", tmp.path(), false).unwrap();
+    assert_eq!(exported, 1);
+
+    // Second export with force overwrites
+    let (exported, skipped) =
+        export::export_messages(&mut session, &messages, "INBOX", tmp.path(), true).unwrap();
+    assert_eq!(exported, 1);
+    assert_eq!(skipped, 0);
+
+    session.logout().unwrap();
+}
