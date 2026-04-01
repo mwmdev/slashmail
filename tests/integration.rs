@@ -11,6 +11,7 @@ use lettre::{Message, SmtpTransport, Transport};
 use slashmail::connection::{self, ImapSession};
 use slashmail::delete;
 use slashmail::export;
+use slashmail::read;
 use slashmail::search::{self, SearchCriteria};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -561,58 +562,6 @@ fn export_creates_eml_files() {
 }
 
 #[test]
-fn export_skips_existing_without_force() {
-    let user = unique_user();
-    send_email(&user, "Export Skip Test", "body");
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
-
-    let temp_dir = std::env::temp_dir().join(format!("slashmail_skip_{user}"));
-
-    // First export
-    let (exported, _) =
-        export::export_messages(&mut session, &messages, "INBOX", &temp_dir, false).unwrap();
-    assert_eq!(exported, 1);
-
-    // Second export without force — should skip
-    let (exported, skipped) =
-        export::export_messages(&mut session, &messages, "INBOX", &temp_dir, false).unwrap();
-    assert_eq!(exported, 0);
-    assert_eq!(skipped, 1);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    session.logout().unwrap();
-}
-
-#[test]
-fn export_force_overwrites() {
-    let user = unique_user();
-    send_email(&user, "Export Force Test", "body");
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
-
-    let temp_dir = std::env::temp_dir().join(format!("slashmail_force_{user}"));
-
-    // First export
-    export::export_messages(&mut session, &messages, "INBOX", &temp_dir, false).unwrap();
-
-    // Second export with force — should overwrite
-    let (exported, skipped) =
-        export::export_messages(&mut session, &messages, "INBOX", &temp_dir, true).unwrap();
-    assert_eq!(exported, 1);
-    assert_eq!(skipped, 0);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    session.logout().unwrap();
-}
-
-#[test]
 fn export_multiple_folders_uid_collision() {
     let user = unique_user();
     send_email(&user, "Inbox export msg", "inbox body");
@@ -1157,6 +1106,154 @@ fn export_force_overwrite() {
         export::export_messages(&mut session, &messages, "INBOX", tmp.path(), true).unwrap();
     assert_eq!(exported, 1);
     assert_eq!(skipped, 0);
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn read_displays_message_content() {
+    let user = unique_user();
+    send_email(&user, "Read test subject", "This is the body text for reading");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1);
+
+    // read_messages prints to stdout — just verify it doesn't error
+    let result = read::read_messages(&mut session, &messages, "INBOX");
+    assert!(result.is_ok(), "read_messages should succeed: {result:?}");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_smaller() {
+    let user = unique_user();
+    let small_body = "tiny";
+    let large_body = "x".repeat(10_000);
+    send_email(&user, "Small msg", small_body);
+    send_email(&user, "Large msg", &large_body);
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.smaller = Some("5K".to_string());
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the small message should match");
+    assert!(results[0].subject.contains("Small msg"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_flagged() {
+    let user = unique_user();
+    send_email(&user, "Flagged msg", "body");
+    send_email(&user, "Normal msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    // Flag the first message
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Flagged)")
+        .unwrap();
+
+    let mut criteria = default_criteria("INBOX");
+    criteria.flagged = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the flagged message should match");
+
+    // Unflagged should find the other one
+    let mut criteria2 = default_criteria("INBOX");
+    criteria2.unflagged = true;
+    let results2 = search::search(&mut session, &criteria2).unwrap();
+
+    assert_eq!(results2.len(), 1, "Only the unflagged message should match");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_answered() {
+    let user = unique_user();
+    send_email(&user, "Answered msg", "body");
+    send_email(&user, "Unanswered msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Answered)")
+        .unwrap();
+
+    let mut criteria = default_criteria("INBOX");
+    criteria.answered = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the answered message should match");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_draft() {
+    let user = unique_user();
+    send_email(&user, "Draft msg", "body");
+    send_email(&user, "Normal msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Draft)")
+        .unwrap();
+
+    let mut criteria = default_criteria("INBOX");
+    criteria.draft = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the draft message should match");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_size_range() {
+    let user = unique_user();
+    let tiny_body = "small";
+    let medium_body = "m".repeat(5_000);
+    let large_body = "x".repeat(50_000);
+    send_email(&user, "Tiny msg", tiny_body);
+    send_email(&user, "Medium msg", &medium_body);
+    send_email(&user, "Large msg", &large_body);
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.larger = Some("1K".to_string());
+    criteria.smaller = Some("10K".to_string());
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(
+        results.len(),
+        1,
+        "Only the medium message should match the size range"
+    );
+    assert!(results[0].subject.contains("Medium msg"));
 
     session.logout().unwrap();
 }
