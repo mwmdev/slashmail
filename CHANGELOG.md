@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] - 2026-04-01
+
+### Added
+
+- `read` command to display email content in terminal with HTML-to-text conversion
+- `--body` and `--text` search flags for message content search (IMAP BODY/TEXT keys)
+- `--smaller` filter (complement to `--larger`)
+- `--flagged`, `--unflagged`, `--answered`, `--draft` search filters
+- `--json` flag for machine-readable output on `search` and `count` commands
+- Unit tests for export module (folder name sanitization, filename format)
+- Integration tests for export skip/overwrite behavior
+
+### Changed
+
+- `sanitize_folder_name()` extracted as public function in export module
+
 ## [0.3.2] - 2026-03-31
 
 ### Added

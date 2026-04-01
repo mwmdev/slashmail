@@ -244,7 +244,14 @@ Once installed, prompts like these just work:
 
 ```
 > Check my latest emails
-> Delete newsletters from noreply@example.com older than 3 months
+> Read the last email from Sarah
+> Find emails about the quarterly report
+> How many unread messages do I have?
+> Show me large emails over 5MB from the last month
+> Delete all newsletters from noreply@example.com older than 3 months
+> Move flagged emails from last week to the Archive folder
+> Export all invoices from 2025 to a backup folder
+> Search my sent folder for emails to the finance team
 ```
 
 Destructive operations always dry-run first and ask for confirmation.
