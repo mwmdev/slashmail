@@ -18,6 +18,11 @@ pub struct SearchCriteria {
     pub since: Option<String>,
     pub before: Option<String>,
     pub larger: Option<String>,
+    pub smaller: Option<String>,
+    pub flagged: bool,
+    pub unflagged: bool,
+    pub answered: bool,
+    pub draft: bool,
     pub limit: Option<usize>,
 }
 
@@ -188,6 +193,22 @@ pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     if let Some(ref larger) = criteria.larger {
         let bytes = parse_size(larger)?;
         parts.push(format!("LARGER {bytes}"));
+    }
+    if let Some(ref smaller) = criteria.smaller {
+        let bytes = parse_size(smaller)?;
+        parts.push(format!("SMALLER {bytes}"));
+    }
+    if criteria.flagged {
+        parts.push("FLAGGED".to_string());
+    }
+    if criteria.unflagged {
+        parts.push("UNFLAGGED".to_string());
+    }
+    if criteria.answered {
+        parts.push("ANSWERED".to_string());
+    }
+    if criteria.draft {
+        parts.push("DRAFT".to_string());
     }
 
     if parts.is_empty() {
@@ -723,6 +744,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(build_query(&c).unwrap(), "ALL");
@@ -744,6 +770,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(build_query(&c).unwrap(), "SUBJECT \"test\"");
@@ -765,6 +796,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(
@@ -789,6 +825,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(
@@ -813,6 +854,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(build_query(&c).unwrap(), "SEEN");
@@ -834,6 +880,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(
@@ -858,6 +909,11 @@ mod tests {
             since: Some("2025-01-01".into()),
             before: Some("2025-12-31".into()),
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(
@@ -882,6 +938,11 @@ mod tests {
             since: None,
             before: None,
             larger: Some("1M".into()),
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(build_query(&c).unwrap(), "LARGER 1048576");
@@ -903,6 +964,11 @@ mod tests {
             since: Some("not-a-date".into()),
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert!(build_query(&c).is_err());
@@ -924,6 +990,11 @@ mod tests {
             since: None,
             before: None,
             larger: Some("abc".into()),
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert!(build_query(&c).is_err());
@@ -1024,6 +1095,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(build_query(&c).unwrap(), "BODY \"invoice\"");
@@ -1045,6 +1121,11 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(build_query(&c).unwrap(), "TEXT \"meeting\"");
@@ -1066,11 +1147,84 @@ mod tests {
             since: None,
             before: None,
             larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
             limit: None,
         };
         assert_eq!(
             build_query(&c).unwrap(),
             "SUBJECT \"report\" BODY \"quarterly\""
         );
+    }
+
+    /// Helper to build a default SearchCriteria with all fields set to None/false.
+    fn default_test_criteria() -> SearchCriteria {
+        SearchCriteria {
+            folder: "INBOX".into(),
+            all_folders: false,
+            subject: None,
+            from: None,
+            to: None,
+            cc: None,
+            body: None,
+            text: None,
+            seen: false,
+            unseen: false,
+            since: None,
+            before: None,
+            larger: None,
+            smaller: None,
+            flagged: false,
+            unflagged: false,
+            answered: false,
+            draft: false,
+            limit: None,
+        }
+    }
+
+    #[test]
+    fn build_query_smaller_only() {
+        let mut c = default_test_criteria();
+        c.smaller = Some("1M".into());
+        assert_eq!(build_query(&c).unwrap(), "SMALLER 1048576");
+    }
+
+    #[test]
+    fn build_query_size_range() {
+        let mut c = default_test_criteria();
+        c.larger = Some("1K".into());
+        c.smaller = Some("1M".into());
+        assert_eq!(build_query(&c).unwrap(), "LARGER 1024 SMALLER 1048576");
+    }
+
+    #[test]
+    fn build_query_flagged() {
+        let mut c = default_test_criteria();
+        c.flagged = true;
+        assert_eq!(build_query(&c).unwrap(), "FLAGGED");
+    }
+
+    #[test]
+    fn build_query_unflagged() {
+        let mut c = default_test_criteria();
+        c.unflagged = true;
+        assert_eq!(build_query(&c).unwrap(), "UNFLAGGED");
+    }
+
+    #[test]
+    fn build_query_answered() {
+        let mut c = default_test_criteria();
+        c.answered = true;
+        assert_eq!(build_query(&c).unwrap(), "ANSWERED");
+    }
+
+    #[test]
+    fn build_query_draft() {
+        let mut c = default_test_criteria();
+        c.draft = true;
+        assert_eq!(build_query(&c).unwrap(), "DRAFT");
     }
 }

@@ -31,6 +31,10 @@ SLASHMAIL_PASS="$SLASHMAIL_PASS" slashmail <command>
 | `--since DATE` | Messages after date |
 | `--before DATE` | Messages before date |
 | `--larger SIZE` | Minimum size (e.g., `1M`, `500K`) |
+| `--smaller SIZE` | Maximum size (e.g., `1M`, `500K`) |
+| `--flagged` / `--unflagged` | Filter by starred status |
+| `--answered` | Only replied-to messages |
+| `--draft` | Only draft messages |
 | `-n, --limit N` | Cap results |
 
 Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters combine with AND logic.

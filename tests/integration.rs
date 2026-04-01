@@ -101,6 +101,11 @@ fn default_criteria(folder: &str) -> SearchCriteria {
         since: None,
         before: None,
         larger: None,
+        smaller: None,
+        flagged: false,
+        unflagged: false,
+        answered: false,
+        draft: false,
         limit: None,
     }
 }

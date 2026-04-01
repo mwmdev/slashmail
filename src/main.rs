@@ -155,6 +155,26 @@ struct FilterArgs {
     /// Messages larger than N bytes (supports K/M suffix)
     #[arg(long)]
     larger: Option<String>,
+
+    /// Messages smaller than N bytes (supports K/M suffix)
+    #[arg(long)]
+    smaller: Option<String>,
+
+    /// Only flagged/starred messages
+    #[arg(long, conflicts_with = "unflagged")]
+    flagged: bool,
+
+    /// Only unflagged messages
+    #[arg(long, conflicts_with = "flagged")]
+    unflagged: bool,
+
+    /// Only replied-to messages
+    #[arg(long)]
+    answered: bool,
+
+    /// Only draft messages
+    #[arg(long)]
+    draft: bool,
 }
 
 #[derive(Parser)]
@@ -302,6 +322,11 @@ impl FilterArgs {
             since: self.since.clone(),
             before: self.before.clone(),
             larger: self.larger.clone(),
+            smaller: self.smaller.clone(),
+            flagged: self.flagged,
+            unflagged: self.unflagged,
+            answered: self.answered,
+            draft: self.draft,
             limit,
         }
     }

@@ -113,6 +113,11 @@ All commands that operate on messages share the same filter options:
     --since <DATE>       Messages since date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     --before <DATE>      Messages before date (YYYY-MM-DD or 7d, 2w, 3m, 1y)
     --larger <SIZE>      Messages larger than N bytes (supports K/M suffix)
+    --smaller <SIZE>     Messages smaller than N bytes (supports K/M suffix)
+    --flagged            Only flagged/starred messages
+    --unflagged          Only unflagged messages
+    --answered           Only replied-to messages
+    --draft              Only draft messages
 -n, --limit <N>          Limit number of results
 ```
 
