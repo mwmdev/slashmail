@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
+use std::{path::Path, process::Command};
 
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::client::Tls;
@@ -115,6 +116,54 @@ fn sleep_for_delivery() {
     thread::sleep(Duration::from_millis(500));
 }
 
+fn slashmail_bin() -> String {
+    std::env::var("CARGO_BIN_EXE_slashmail").unwrap_or_else(|_| {
+        let mut path = std::env::current_exe().unwrap();
+        path.pop();
+        if path.ends_with("deps") {
+            path.pop();
+        }
+        path.push("slashmail");
+        path.to_string_lossy().into_owned()
+    })
+}
+
+fn write_multi_account_config(path: &Path, accounts: &[(&str, &str)]) {
+    let mut config = String::from("default_account = \"personal\"\n\n");
+    for (name, user) in accounts {
+        let email = user_email(user);
+        config.push_str(&format!(
+            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = {}\ntls = false\nuser = \"{email}\"\npass_env = \"SLASHMAIL_{}_PASS\"\ndefault_folder = \"INBOX\"\n\n",
+            imap_port(),
+            name.to_uppercase()
+        ));
+    }
+    std::fs::write(path, config).unwrap();
+}
+
+fn slashmail_cmd(config_path: &Path, accounts: &[(&str, &str)]) -> Command {
+    let mut cmd = Command::new(slashmail_bin());
+    cmd.arg("--config").arg(config_path);
+    for (name, user) in accounts {
+        cmd.env(
+            format!("SLASHMAIL_{}_PASS", name.to_uppercase()),
+            user_email(user),
+        );
+    }
+    cmd
+}
+
+fn assert_cmd_success(output: std::process::Output) -> String {
+    assert!(
+        output.status.success(),
+        "command failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
 /// Convert days since Unix epoch to (year, month, day). Simple civil calendar math.
 fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
@@ -165,6 +214,113 @@ fn search_finds_seeded_email() {
     assert!(results[0].from.contains("sender@localhost"));
 
     session.logout().unwrap();
+}
+
+#[test]
+fn cli_search_all_accounts_finds_messages_from_two_accounts() {
+    let personal = unique_user();
+    let work = unique_user();
+    send_email(&personal, "Shared report personal", "personal body");
+    send_email(&work, "Shared report work", "work body");
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", personal.as_str()), ("work", work.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let output = slashmail_cmd(&config, &accounts)
+        .args([
+            "search",
+            "--all-accounts",
+            "--subject",
+            "Shared report",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+    let rows: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+
+    assert_eq!(rows.len(), 2);
+    assert!(rows
+        .iter()
+        .any(|row| row["account"] == "personal" && row["subject"] == "Shared report personal"));
+    assert!(rows
+        .iter()
+        .any(|row| row["account"] == "work" && row["subject"] == "Shared report work"));
+}
+
+#[test]
+fn cli_count_all_accounts_reports_per_account_totals() {
+    let personal = unique_user();
+    let work = unique_user();
+    send_email(&personal, "Count report personal", "personal body");
+    send_email(&work, "Count report work A", "work body");
+    send_email(&work, "Count report work B", "work body");
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", personal.as_str()), ("work", work.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let output = slashmail_cmd(&config, &accounts)
+        .args([
+            "count",
+            "--all-accounts",
+            "--subject",
+            "Count report",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(json["total"], 3);
+    let accounts = json["accounts"].as_array().unwrap();
+    assert!(accounts
+        .iter()
+        .any(|account| account["account"] == "personal" && account["count"] == 1));
+    assert!(accounts
+        .iter()
+        .any(|account| account["account"] == "work" && account["count"] == 2));
+}
+
+#[test]
+fn cli_read_all_accounts_prints_bodies_from_each_account() {
+    let personal = unique_user();
+    let work = unique_user();
+    send_email(
+        &personal,
+        "Read aggregate personal",
+        "personal aggregate body",
+    );
+    send_email(&work, "Read aggregate work", "work aggregate body");
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", personal.as_str()), ("work", work.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let output = slashmail_cmd(&config, &accounts)
+        .args([
+            "read",
+            "--all-accounts",
+            "--subject",
+            "Read aggregate",
+            "-n",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+
+    assert!(stdout.contains("personal aggregate body"));
+    assert!(stdout.contains("work aggregate body"));
 }
 
 #[test]
