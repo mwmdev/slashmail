@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 
 use crate::connection::ImapSession;
 use crate::display::MessageRow;
 use crate::search;
+
+pub type MessageBodyMap = HashMap<(Option<String>, String, u32), Vec<u8>>;
+pub type DefaultFolderMap = HashMap<Option<String>, String>;
 
 /// Display the full content of messages in the terminal.
 pub fn read_messages(
@@ -10,8 +14,37 @@ pub fn read_messages(
     messages: &[MessageRow],
     default_folder: &str,
 ) -> Result<()> {
-    let mut by_folder: std::collections::HashMap<String, Vec<u32>> =
-        std::collections::HashMap::new();
+    let fetched = fetch_message_bodies(session, messages, default_folder)?;
+
+    let mut defaults = DefaultFolderMap::new();
+    defaults.insert(None, default_folder.to_string());
+    for msg in messages {
+        if let Some(account) = &msg.account {
+            defaults.insert(Some(account.clone()), default_folder.to_string());
+        }
+    }
+
+    let mut bodies = MessageBodyMap::new();
+    for msg in messages {
+        let folder = msg
+            .folder
+            .clone()
+            .unwrap_or_else(|| default_folder.to_string());
+        if let Some(body) = fetched.get(&(folder.clone(), msg.uid)) {
+            bodies.insert((msg.account.clone(), folder, msg.uid), body.clone());
+        }
+    }
+
+    print_messages_with_bodies(messages, &defaults, &bodies);
+    Ok(())
+}
+
+pub fn fetch_message_bodies(
+    session: &mut ImapSession,
+    messages: &[MessageRow],
+    default_folder: &str,
+) -> Result<HashMap<(String, u32), Vec<u8>>> {
+    let mut by_folder: HashMap<String, Vec<u32>> = HashMap::new();
     for msg in messages {
         let folder = msg
             .folder
@@ -20,9 +53,7 @@ pub fn read_messages(
         by_folder.entry(folder).or_default().push(msg.uid);
     }
 
-    // Build a UID→folder map so we can print in the original (sorted) order
-    let mut uid_bodies: std::collections::HashMap<(String, u32), Vec<u8>> =
-        std::collections::HashMap::new();
+    let mut uid_bodies: HashMap<(String, u32), Vec<u8>> = HashMap::new();
 
     for (folder, uids) in &by_folder {
         session
@@ -46,27 +77,47 @@ pub fn read_messages(
         }
     }
 
+    Ok(uid_bodies)
+}
+
+pub fn print_messages_with_bodies(
+    messages: &[MessageRow],
+    default_folders: &DefaultFolderMap,
+    bodies: &MessageBodyMap,
+) {
     // Print in the original message order (newest first, as returned by search)
     let total = messages.len();
     for (i, msg) in messages.iter().enumerate() {
-        let folder = msg
-            .folder
-            .clone()
-            .unwrap_or_else(|| default_folder.to_string());
-        let key = (folder, msg.uid);
+        let key = message_key(msg, default_folders);
 
-        if let Some(raw) = uid_bodies.get(&key) {
+        if let Some(raw) = bodies.get(&key) {
             print_message(raw);
         } else {
-            eprintln!("Warning: could not fetch body for UID {}", msg.uid);
+            let account = msg
+                .account
+                .as_deref()
+                .map(|name| format!(" in account '{name}'"))
+                .unwrap_or_default();
+            eprintln!("Warning: could not fetch body for UID {}{account}", msg.uid);
         }
 
         if i + 1 < total {
             println!("\n{}\n", "─".repeat(60));
         }
     }
+}
 
-    Ok(())
+pub fn message_key(
+    msg: &MessageRow,
+    default_folders: &DefaultFolderMap,
+) -> (Option<String>, String, u32) {
+    let folder = msg.folder.clone().unwrap_or_else(|| {
+        default_folders
+            .get(&msg.account)
+            .cloned()
+            .unwrap_or_else(|| "INBOX".to_string())
+    });
+    (msg.account.clone(), folder, msg.uid)
 }
 
 fn print_message(raw: &[u8]) {
@@ -224,6 +275,48 @@ mod tests {
         let (text, attachments) = extract_body(&parsed);
         assert_eq!(text, "Hello world");
         assert!(attachments.is_empty());
+    }
+
+    #[test]
+    fn message_key_uses_account_fallback_folder() {
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "Sent".to_string());
+        let msg = MessageRow {
+            account: Some("work".to_string()),
+            uid: 42,
+            folder: None,
+            from: String::new(),
+            subject: String::new(),
+            date: String::new(),
+            timestamp: 0,
+            size: 0,
+        };
+
+        assert_eq!(
+            message_key(&msg, &defaults),
+            (Some("work".to_string()), "Sent".to_string(), 42)
+        );
+    }
+
+    #[test]
+    fn message_key_prefers_explicit_folder() {
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "Sent".to_string());
+        let msg = MessageRow {
+            account: Some("work".to_string()),
+            uid: 42,
+            folder: Some("Archive".to_string()),
+            from: String::new(),
+            subject: String::new(),
+            date: String::new(),
+            timestamp: 0,
+            size: 0,
+        };
+
+        assert_eq!(
+            message_key(&msg, &defaults),
+            (Some("work".to_string()), "Archive".to_string(), 42)
+        );
     }
 
     #[test]

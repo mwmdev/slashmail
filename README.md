@@ -66,9 +66,12 @@ Commands:
 --port <PORT>      IMAP port [default: 1143 plain, 993 TLS]
 --tls              Use TLS (required for remote IMAP servers)
 -u, --user <USER>  IMAP username (or SLASHMAIL_USER env)
+--account <NAME>   Use a named account from config
+--all-accounts     Query all configured accounts (read-only commands only)
 ```
 
-Password is read from `SLASHMAIL_PASS` env var or prompted interactively.
+For direct/legacy connections, the password is read from `SLASHMAIL_PASS` env var or prompted interactively.
+For named accounts, set `pass_env` per account or slashmail prompts for that account.
 
 Connection options are global and can appear before or after the subcommand.
 
@@ -82,7 +85,7 @@ Settings can be stored in a config file to avoid repeating connection options:
 | **macOS** | `~/Library/Application Support/slashmail/config.toml` |
 | **Windows** | `%APPDATA%\slashmail\config.toml` |
 
-Example `config.toml`:
+Single-account `config.toml`:
 
 ```toml
 host = "imap.gmail.com"
@@ -93,7 +96,36 @@ trash_folder = "[Gmail]/Trash"
 default_folder = "INBOX"
 ```
 
-All fields are optional. CLI arguments and environment variables take precedence over config values.
+All single-account fields are optional. CLI arguments and environment variables take precedence over these top-level config values.
+
+Multi-account `config.toml`:
+
+```toml
+default_account = "personal"
+
+[[accounts]]
+name = "personal"
+host = "imap.gmail.com"
+port = 993
+tls = true
+user = "user@gmail.com"
+pass_env = "SLASHMAIL_PERSONAL_PASS"
+trash_folder = "[Gmail]/Trash"
+default_folder = "INBOX"
+
+[[accounts]]
+name = "work"
+host = "imap.fastmail.com"
+port = 993
+tls = true
+user = "user@company.com"
+pass_env = "SLASHMAIL_WORK_PASS"
+default_folder = "INBOX"
+```
+
+When `[[accounts]]` is configured, slashmail uses `default_account` by default, or the first account if `default_account` is omitted. Use `--account <NAME>` to select one account, or `--all-accounts` to aggregate read-only commands across every account.
+
+`--all-accounts` is supported for `search`, `read`, `count`, `status`, and `quota`. Mutating commands (`delete`, `move`, `mark`) and `export` require a single account.
 
 Use `--config <PATH>` to specify an alternative config file location.
 
@@ -176,6 +208,13 @@ slashmail count -u user@example.com --json
 
 # Search across all folders
 slashmail search -u user@example.com --all-folders --from "noreply"
+
+# Search across all configured accounts
+slashmail search --all-accounts --from "newsletter"
+slashmail read --all-accounts --subject "invoice" -n 3
+
+# Use one named account from config
+slashmail count --account work --unseen
 
 # Delete with interactive confirmation
 slashmail delete -u user@example.com --from "spam@example.com"

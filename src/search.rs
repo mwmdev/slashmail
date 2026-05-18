@@ -458,6 +458,7 @@ fn fetch_messages(
             by_uid.insert(
                 uid,
                 MessageRow {
+                    account: None,
                     uid,
                     folder: if include_folder {
                         Some(clean_folder.clone())

@@ -1,7 +1,9 @@
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, ContentArrangement, Table};
 
-#[derive(serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct MessageRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub account: Option<String>,
     pub uid: u32,
     pub folder: Option<String>,
     pub from: String,
@@ -65,6 +67,7 @@ mod tests {
     #[test]
     fn json_single_message() {
         let messages = vec![MessageRow {
+            account: None,
             uid: 42,
             folder: None,
             from: "alice@example.com".into(),
@@ -80,11 +83,13 @@ mod tests {
         assert_eq!(parsed[0]["subject"], "Test");
         assert_eq!(parsed[0]["size"], 1024);
         assert!(parsed[0]["folder"].is_null());
+        assert!(parsed[0]["account"].is_null());
     }
 
     #[test]
     fn json_with_folder() {
         let messages = vec![MessageRow {
+            account: None,
             uid: 1,
             folder: Some("INBOX".into()),
             from: "bob@example.com".into(),
@@ -96,6 +101,23 @@ mod tests {
         let json = serde_json::to_string(&messages).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed[0]["folder"], "INBOX");
+    }
+
+    #[test]
+    fn json_with_account() {
+        let messages = vec![MessageRow {
+            account: Some("work".into()),
+            uid: 1,
+            folder: None,
+            from: "bob@example.com".into(),
+            subject: "Hi".into(),
+            date: "Tue, 2 Apr 2026".into(),
+            timestamp: 1774100000,
+            size: 512,
+        }];
+        let json = serde_json::to_string(&messages).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed[0]["account"], "work");
     }
 }
 
@@ -109,19 +131,26 @@ pub fn display_messages(messages: &[MessageRow]) {
         return;
     }
 
+    let has_account = messages.iter().any(|m| m.account.is_some());
     let has_folder = messages.iter().any(|m| m.folder.is_some());
     let mut table = Table::new();
     table.load_preset(UTF8_FULL_CONDENSED);
     table.set_content_arrangement(ContentArrangement::Dynamic);
 
     let mut header = vec!["UID", "From", "Subject", "Date", "Size"];
+    if has_account {
+        header.insert(1, "Account");
+    }
     if has_folder {
-        header.insert(1, "Folder");
+        header.insert(if has_account { 2 } else { 1 }, "Folder");
     }
     table.set_header(header);
 
     for msg in messages {
         let mut row: Vec<Cell> = vec![Cell::new(msg.uid)];
+        if has_account {
+            row.push(Cell::new(msg.account.as_deref().unwrap_or("")));
+        }
         if has_folder {
             row.push(Cell::new(msg.folder.as_deref().unwrap_or("")));
         }

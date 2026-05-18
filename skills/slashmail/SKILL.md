@@ -9,7 +9,7 @@ Email interaction via the `slashmail` CLI, an IMAP client.
 
 **Prerequisites**: Verify `slashmail` is installed by running `which slashmail`. If not found, install from https://github.com/mwmdev/slashmail (Rust binary — `cargo install slashmail` or download from releases).
 
-**Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Password via env var `SLASHMAIL_PASS`. Pass it explicitly for non-interactive shells:
+**Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts can define `pass_env` and can be selected with `--account NAME`; read-only commands can use `--all-accounts`.
 
 ```bash
 SLASHMAIL_PASS="$SLASHMAIL_PASS" slashmail <command>
@@ -68,5 +68,6 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 **Mailbox overview**: `slashmail status`
 **Search email content**: `slashmail search --body "invoice" --since 1m`
 **Search everywhere**: `slashmail search --text "quarterly report"`
+**Search all accounts**: `slashmail search --all-accounts --text "quarterly report"`
 **Read a message**: `slashmail read --from "boss@example.com" --limit 1`
 **Clean up old newsletters**: `slashmail delete --from "newsletter@" --before 3m --dry-run` then confirm with user before running without `--dry-run`

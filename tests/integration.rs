@@ -1113,7 +1113,11 @@ fn export_force_overwrite() {
 #[test]
 fn read_displays_message_content() {
     let user = unique_user();
-    send_email(&user, "Read test subject", "This is the body text for reading");
+    send_email(
+        &user,
+        "Read test subject",
+        "This is the body text for reading",
+    );
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
@@ -1124,6 +1128,45 @@ fn read_displays_message_content() {
     // read_messages prints to stdout — just verify it doesn't error
     let result = read::read_messages(&mut session, &messages, "INBOX");
     assert!(result.is_ok(), "read_messages should succeed: {result:?}");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn read_fetches_from_explicit_non_default_folder() {
+    let user = unique_user();
+    send_email(&user, "Inbox read fallback", "inbox body");
+    send_email(&user, "Archive read fallback", "archive body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.create("Archive").unwrap();
+
+    let inbox_results = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let archive_msg = inbox_results
+        .iter()
+        .find(|m| m.subject.contains("Archive read fallback"))
+        .unwrap();
+    let uid_set = archive_msg.uid.to_string();
+    session.select("INBOX").unwrap();
+    session.uid_move_or_fallback(&uid_set, "Archive").unwrap();
+
+    let mut criteria = default_criteria("Archive");
+    criteria.subject = Some("Archive read fallback".to_string());
+    let messages = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].folder.is_none(),
+        "single-folder search rows intentionally omit folder metadata"
+    );
+
+    let bodies = read::fetch_message_bodies(&mut session, &messages, "Archive").unwrap();
+    let raw = bodies
+        .get(&("Archive".to_string(), messages[0].uid))
+        .expect("body should be fetched from Archive");
+    let text = String::from_utf8_lossy(raw);
+    assert!(text.contains("archive body"));
+    assert!(!text.contains("inbox body"));
 
     session.logout().unwrap();
 }
