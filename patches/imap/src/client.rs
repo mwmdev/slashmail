@@ -2442,8 +2442,7 @@ mod tests {
 
     #[test]
     fn append_result_classifies_timeouts_by_phase() {
-        let mut before =
-            mock_session!(ScriptedStream::new(b"").timing_out_on_read_call(1));
+        let mut before = mock_session!(ScriptedStream::new(b"").timing_out_on_read_call(1));
         match before.append_with_flags_result("Drafts", b"abc", &[]) {
             Err(AppendError::PreLiteral(Error::Io(error))) => {
                 assert_eq!(error.kind(), ErrorKind::TimedOut);
