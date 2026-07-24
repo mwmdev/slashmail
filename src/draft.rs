@@ -468,9 +468,10 @@ fn derive_reply_context(
     sender: &Mailbox,
     quote_original: bool,
 ) -> Result<ReplyContext> {
+    let from = parse_required_mailboxes(&source.headers.get_all_headers("From"), "From")?;
     let reply_to_headers = source.headers.get_all_headers("Reply-To");
     let primary = if reply_to_headers.is_empty() {
-        parse_required_mailboxes(&source.headers.get_all_headers("From"), "From")?
+        from.clone()
     } else {
         parse_required_mailboxes(&reply_to_headers, "Reply-To")?
     };
@@ -516,7 +517,7 @@ fn derive_reply_context(
     }
     let references = (!references.is_empty()).then(|| format_message_ids(&references));
 
-    let attribution_sender = primary
+    let attribution_sender = from
         .first()
         .expect("required origin parsing returned a nonempty list");
     let date = first_validated_value(source, "Date")?;
@@ -1011,6 +1012,30 @@ Content-Type: text/plain; charset=utf-8\r\n\r\n\
         let body = parsed.get_body().unwrap();
         assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!body.contains("<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn reply_routes_to_reply_to_but_attributes_quote_to_from() {
+        let source = b"From: Author <author@example.com>\r\n\
+Reply-To: Support <support@example.com>\r\n\
+Subject: Topic\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\r\n\
+Original";
+
+        let composed = compose_reply(source, BodyFormat::Plain, true).unwrap();
+
+        assert_eq!(
+            composed
+                .to
+                .iter()
+                .map(|mailbox| mailbox.email.to_string())
+                .collect::<Vec<_>>(),
+            ["support@example.com"]
+        );
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+        let body = parsed.get_body().unwrap();
+        assert!(body.contains("Author <author@example.com> wrote:"));
+        assert!(!body.contains("Support <support@example.com> wrote:"));
     }
 
     #[test]

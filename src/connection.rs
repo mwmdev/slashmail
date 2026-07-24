@@ -5,10 +5,15 @@ use crate::search;
 use anyhow::{Context, Result};
 use imap::Session;
 use std::collections::HashSet;
-use std::net::TcpStream;
+use std::io::{self, ErrorKind};
+use std::net::{TcpStream, ToSocketAddrs};
+use std::time::{Duration, Instant};
 
 pub type PlainSession = Session<TcpStream>;
 pub type TlsSession = Session<native_tls::TlsStream<TcpStream>>;
+
+const IMAP_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const IMAP_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
 enum Inner {
     Plain(PlainSession),
@@ -43,6 +48,13 @@ impl ImapSession {
         match &mut self.inner {
             Inner::Plain(s) => s.select(mailbox),
             Inner::Tls(s) => s.select(mailbox),
+        }
+    }
+
+    pub fn examine(&mut self, mailbox: &str) -> imap::error::Result<imap::types::Mailbox> {
+        match &mut self.inner {
+            Inner::Plain(s) => s.examine(mailbox),
+            Inner::Tls(s) => s.examine(mailbox),
         }
     }
 
@@ -238,42 +250,70 @@ fn name_attribute_text(attribute: &imap::types::NameAttribute<'_>) -> String {
     }
 }
 
-fn is_loopback(host: &str) -> bool {
-    host == "127.0.0.1" || host == "::1" || host == "localhost"
+pub fn is_loopback_host(host: &str) -> bool {
+    host.eq_ignore_ascii_case("localhost")
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|address| address.is_loopback())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::TcpListener;
+    use std::thread;
 
     #[test]
     fn is_loopback_ipv4() {
-        assert!(is_loopback("127.0.0.1"));
+        assert!(is_loopback_host("127.0.0.1"));
+        assert!(is_loopback_host("127.42.0.9"));
     }
 
     #[test]
     fn is_loopback_ipv6() {
-        assert!(is_loopback("::1"));
+        assert!(is_loopback_host("::1"));
     }
 
     #[test]
     fn is_loopback_localhost() {
-        assert!(is_loopback("localhost"));
+        assert!(is_loopback_host("localhost"));
+        assert!(is_loopback_host("LOCALHOST"));
     }
 
     #[test]
     fn is_loopback_remote_host() {
-        assert!(!is_loopback("example.com"));
+        assert!(!is_loopback_host("example.com"));
     }
 
     #[test]
     fn is_loopback_private_ip() {
-        assert!(!is_loopback("192.168.1.1"));
+        assert!(!is_loopback_host("192.168.1.1"));
+    }
+
+    #[test]
+    fn configured_tcp_stream_has_read_and_write_deadlines() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let accepting = thread::spawn(move || listener.accept().unwrap());
+        let io_timeout = Duration::from_millis(1_234);
+
+        let stream = connect_tcp(
+            "127.0.0.1",
+            address.port(),
+            Duration::from_secs(1),
+            io_timeout,
+        )
+        .unwrap();
+
+        assert_eq!(stream.read_timeout().unwrap(), Some(io_timeout));
+        assert_eq!(stream.write_timeout().unwrap(), Some(io_timeout));
+        drop(stream);
+        accepting.join().unwrap();
     }
 }
 
 pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Result<ImapSession> {
-    if !tls && !is_loopback(host) {
+    if !tls && !is_loopback_host(host) {
         eprintln!(
             "Warning: connecting to {} without TLS. Credentials will be sent in plaintext.",
             host
@@ -288,16 +328,23 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
             .danger_accept_invalid_hostnames(false)
             .build()
             .context("Failed to create TLS connector")?;
-        let client = imap::connect((host, port), host, &tls_connector)
-            .context(format!("Failed to TLS-connect to {host}:{port}"))?;
+        let tcp = connect_tcp(host, port, IMAP_CONNECT_TIMEOUT, IMAP_IO_TIMEOUT)
+            .with_context(|| format!("Failed to connect to {host}:{port}"))?;
+        let tls = tls_connector
+            .connect(host, tcp)
+            .with_context(|| format!("Failed to TLS-connect to {host}:{port}"))?;
+        let mut client = imap::Client::new(tls);
+        client
+            .read_greeting()
+            .context("Failed to read the IMAP greeting")?;
         let s = client
             .login(user, pass)
             .map_err(|e| e.0)
             .context("IMAP login failed")?;
         Inner::Tls(s)
     } else {
-        let tcp = TcpStream::connect(format!("{host}:{port}"))
-            .context(format!("Failed to connect to {host}:{port}"))?;
+        let tcp = connect_tcp(host, port, IMAP_CONNECT_TIMEOUT, IMAP_IO_TIMEOUT)
+            .with_context(|| format!("Failed to connect to {host}:{port}"))?;
         let client = imap::Client::new(tcp);
         let s = client
             .login(user, pass)
@@ -322,4 +369,38 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
         inner: session,
         capabilities,
     })
+}
+
+fn connect_tcp(
+    host: &str,
+    port: u16,
+    connect_timeout: Duration,
+    io_timeout: Duration,
+) -> io::Result<TcpStream> {
+    let addresses = (host, port).to_socket_addrs()?;
+    let started = Instant::now();
+    let mut last_error = None;
+
+    for address in addresses {
+        let remaining = connect_timeout.saturating_sub(started.elapsed());
+        if remaining.is_zero() {
+            break;
+        }
+
+        match TcpStream::connect_timeout(&address, remaining) {
+            Ok(stream) => {
+                stream.set_read_timeout(Some(io_timeout))?;
+                stream.set_write_timeout(Some(io_timeout))?;
+                return Ok(stream);
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        io::Error::new(
+            ErrorKind::TimedOut,
+            format!("could not connect within {connect_timeout:?}"),
+        )
+    }))
 }

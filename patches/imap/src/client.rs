@@ -1714,8 +1714,11 @@ mod tests {
     struct ScriptedStream {
         read_buf: Vec<u8>,
         read_pos: usize,
+        read_calls: usize,
         written_buf: Vec<u8>,
         write_calls: usize,
+        timeout_on_read_call: Option<usize>,
+        timeout_on_write_call: Option<usize>,
         fail_on_write_call: Option<usize>,
     }
 
@@ -1724,10 +1727,23 @@ mod tests {
             Self {
                 read_buf: read_buf.to_vec(),
                 read_pos: 0,
+                read_calls: 0,
                 written_buf: Vec::new(),
                 write_calls: 0,
+                timeout_on_read_call: None,
+                timeout_on_write_call: None,
                 fail_on_write_call: None,
             }
+        }
+
+        fn timing_out_on_read_call(mut self, call: usize) -> Self {
+            self.timeout_on_read_call = Some(call);
+            self
+        }
+
+        fn timing_out_on_write_call(mut self, call: usize) -> Self {
+            self.timeout_on_write_call = Some(call);
+            self
         }
 
         fn failing_on_write_call(mut self, call: usize) -> Self {
@@ -1738,6 +1754,10 @@ mod tests {
 
     impl Read for ScriptedStream {
         fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            self.read_calls += 1;
+            if self.timeout_on_read_call == Some(self.read_calls) {
+                return Err(IoError::new(ErrorKind::TimedOut, "scripted read timeout"));
+            }
             if self.read_pos == self.read_buf.len() {
                 return Ok(0);
             }
@@ -1751,6 +1771,9 @@ mod tests {
     impl Write for ScriptedStream {
         fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
             self.write_calls += 1;
+            if self.timeout_on_write_call == Some(self.write_calls) {
+                return Err(IoError::new(ErrorKind::TimedOut, "scripted write timeout"));
+            }
             if self.fail_on_write_call == Some(self.write_calls) {
                 return Err(IoError::new(ErrorKind::BrokenPipe, "scripted disconnect"));
             }
@@ -2413,6 +2436,38 @@ mod tests {
                 phase: AppendPhase::Completion,
                 source: Error::ConnectionLost,
             }) => {}
+            result => panic!("unexpected result {:?}", result),
+        }
+    }
+
+    #[test]
+    fn append_result_classifies_timeouts_by_phase() {
+        let mut before =
+            mock_session!(ScriptedStream::new(b"").timing_out_on_read_call(1));
+        match before.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::PreLiteral(Error::Io(error))) => {
+                assert_eq!(error.kind(), ErrorKind::TimedOut);
+            }
+            result => panic!("unexpected result {:?}", result),
+        }
+
+        let mut during =
+            mock_session!(ScriptedStream::new(b"+ ready\r\n").timing_out_on_write_call(2));
+        match during.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::Indeterminate {
+                phase: AppendPhase::LiteralWrite,
+                source: Error::Io(error),
+            }) => assert_eq!(error.kind(), ErrorKind::TimedOut),
+            result => panic!("unexpected result {:?}", result),
+        }
+
+        let mut after =
+            mock_session!(ScriptedStream::new(b"+ ready\r\n").timing_out_on_read_call(2));
+        match after.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::Indeterminate {
+                phase: AppendPhase::Completion,
+                source: Error::Io(error),
+            }) => assert_eq!(error.kind(), ErrorKind::TimedOut),
             result => panic!("unexpected result {:?}", result),
         }
     }

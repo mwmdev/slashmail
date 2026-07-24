@@ -179,16 +179,69 @@ fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
     let mut attachments = Vec::new();
     collect_attachments(parsed, &mut attachments);
 
-    let body = match decoded_text_body(parsed) {
-        Ok(Some(body)) => body,
-        Ok(None) => String::new(),
-        Err(error) => {
-            eprintln!("Warning: failed to decode message body: {error:#}");
-            String::new()
-        }
-    };
+    (display_text_body(parsed), attachments)
+}
 
-    (body, attachments)
+fn display_text_body(parsed: &mailparse::ParsedMail) -> String {
+    let mut text_plain = None;
+    let mut text_html = None;
+    collect_display_text_parts(parsed, &mut text_plain, &mut text_html);
+
+    if let Some(text) = text_plain {
+        return text;
+    }
+
+    match text_html {
+        Some(html) => match html2text::from_read(html.as_bytes(), 80) {
+            Ok(converted) => converted,
+            Err(error) => {
+                eprintln!("Warning: failed to convert HTML body to text: {error}");
+                html
+            }
+        },
+        None => String::new(),
+    }
+}
+
+fn collect_display_text_parts(
+    part: &mailparse::ParsedMail,
+    text_plain: &mut Option<String>,
+    text_html: &mut Option<String>,
+) {
+    let mime = part.ctype.mimetype.to_lowercase();
+
+    if is_attachment(part) {
+        return;
+    }
+
+    if mime.starts_with("multipart/") {
+        for sub in &part.subparts {
+            collect_display_text_parts(sub, text_plain, text_html);
+        }
+    } else if mime == "text/plain" && text_plain.is_none() {
+        *text_plain = Some(display_part_text(part, "text/plain"));
+    } else if mime == "text/html" && text_html.is_none() {
+        *text_html = Some(display_part_text(part, "text/html"));
+    }
+}
+
+fn display_part_text(part: &mailparse::ParsedMail, mime: &str) -> String {
+    part.get_body().unwrap_or_else(|error| {
+        eprintln!("Warning: failed to decode {mime} body: {error}");
+        raw_part_text(part)
+    })
+}
+
+fn raw_part_text(part: &mailparse::ParsedMail) -> String {
+    use mailparse::body::Body;
+
+    let body = part.get_body_encoded();
+    let raw = match &body {
+        Body::Base64(body) | Body::QuotedPrintable(body) => body.get_raw(),
+        Body::SevenBit(body) | Body::EightBit(body) => body.get_raw(),
+        Body::Binary(body) => body.get_raw(),
+    };
+    String::from_utf8_lossy(raw).into_owned()
 }
 
 /// Return the first usable, decoded, non-attachment text body.
@@ -417,6 +470,19 @@ Content-Transfer-Encoding: base64\r\n\r\n\
         let parsed = mailparse::parse_mail(raw).unwrap();
 
         assert!(decoded_text_body(&parsed).is_err());
+    }
+
+    #[test]
+    fn extract_body_falls_back_to_raw_malformed_base64() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n\
+%%%invalid%%%";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        let (text, attachments) = extract_body(&parsed);
+
+        assert_eq!(text, "%%%invalid%%%");
+        assert!(attachments.is_empty());
     }
 
     #[test]

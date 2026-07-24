@@ -480,12 +480,21 @@ where
     R: Read,
     F: FnMut(&str) -> Option<String>,
 {
+    ensure_secure_draft_transport(account)?;
     let credential = draft_credential_with(account, environment)?;
     let mut body = String::new();
     reader
         .read_to_string(&mut body)
         .context("Failed to read the draft body from stdin")?;
     Ok((credential, body))
+}
+
+fn ensure_secure_draft_transport(account: &config::ResolvedAccount) -> Result<()> {
+    if account.tls || connection::is_loopback_host(&account.host) {
+        return Ok(());
+    }
+
+    bail!("Draft and reply commands require TLS for non-loopback IMAP servers")
 }
 
 struct DraftSessionFactory<'a> {
@@ -545,8 +554,8 @@ fn fetch_reply_source(
     uid: u32,
 ) -> Result<Vec<u8>> {
     session
-        .select(folder)
-        .map_err(|_| anyhow::anyhow!("Failed to select the reply source folder"))?;
+        .examine(folder)
+        .map_err(|_| anyhow::anyhow!("Failed to examine the reply source folder"))?;
     let fetches = session
         .uid_fetch(&uid.to_string(), "BODY.PEEK[]")
         .map_err(|_| anyhow::anyhow!("Failed to fetch the reply source message"))?;
@@ -1721,6 +1730,22 @@ mod tests {
         let account = draft_account();
         assert!(read_draft_body_with(&account, |_| None, MustNotRead).is_err());
         assert!(read_draft_body_with(&account, |_| Some(String::new()), MustNotRead).is_err());
+    }
+
+    #[test]
+    fn draft_transport_requires_tls_before_stdin_for_remote_hosts() {
+        let mut account = draft_account();
+        account.tls = false;
+        let error = read_draft_body_with(&account, |_| Some("secret".to_string()), MustNotRead)
+            .err()
+            .expect("remote plaintext draft should fail");
+        assert!(error.to_string().contains("require TLS"));
+
+        account.host = "127.0.0.1".to_string();
+        let (_, body) =
+            read_draft_body_with(&account, |_| Some("secret".to_string()), b"body".as_slice())
+                .unwrap();
+        assert_eq!(body, "body");
     }
 
     #[test]
