@@ -197,7 +197,7 @@ fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
 /// available it is converted to text. Decode and conversion failures are
 /// returned to the caller so stateful draft orchestration can fail before
 /// mutating a mailbox.
-pub fn decoded_text_body(parsed: &mailparse::ParsedMail) -> Result<Option<String>> {
+pub(crate) fn decoded_text_body(parsed: &mailparse::ParsedMail) -> Result<Option<String>> {
     let mut text_plain = None;
     let mut text_html = None;
     collect_text_parts(parsed, &mut text_plain, &mut text_html)?;

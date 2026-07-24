@@ -111,7 +111,7 @@ fn validate_append_mailbox(value: &str) -> Result<String> {
     if let Some(offender) = value.chars().find(|c| c.is_control()) {
         return Err(Error::Validate(ValidateError(offender)));
     }
-    validate_str(value)
+    Ok(quote!(value))
 }
 
 /// Ensure the input doesn't contain a command-terminator (newline), but don't quote it like

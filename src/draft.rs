@@ -53,6 +53,18 @@ struct ReplyContext {
     quoted_text: Option<String>,
 }
 
+struct MessageInput {
+    sender: Mailbox,
+    to: Vec<Mailbox>,
+    cc: Vec<Mailbox>,
+    bcc: Vec<Mailbox>,
+    subject: String,
+    body: String,
+    format: BodyFormat,
+    in_reply_to: Option<String>,
+    references: Option<String>,
+}
+
 pub fn parse_mailbox(value: &str, field: &str) -> Result<Mailbox> {
     validate_header_text(value, field)?;
     let mailbox = value
@@ -73,17 +85,17 @@ pub fn compose_new_draft(input: NewDraftInput) -> Result<ComposedDraft> {
         bail!("At least one To recipient is required");
     }
 
-    build_message(
-        input.sender,
-        input.to,
-        input.cc,
-        input.bcc,
-        input.subject,
-        input.body,
-        input.format,
-        None,
-        None,
-    )
+    build_message(MessageInput {
+        sender: input.sender,
+        to: input.to,
+        cc: input.cc,
+        bcc: input.bcc,
+        subject: input.subject,
+        body: input.body,
+        format: input.format,
+        in_reply_to: None,
+        references: None,
+    })
 }
 
 pub fn compose_reply_draft(input: ReplyDraftInput<'_>) -> Result<ComposedDraft> {
@@ -98,31 +110,31 @@ pub fn compose_reply_draft(input: ReplyDraftInput<'_>) -> Result<ComposedDraft> 
             .then_some((context.attribution.as_str(), context.quoted_text.as_deref())),
     );
 
-    build_message(
-        input.sender,
-        context.to,
-        context.cc,
-        Vec::new(),
-        context.subject,
+    build_message(MessageInput {
+        sender: input.sender,
+        to: context.to,
+        cc: context.cc,
+        bcc: Vec::new(),
+        subject: context.subject,
         body,
-        input.format,
-        context.in_reply_to,
-        context.references,
-    )
+        format: input.format,
+        in_reply_to: context.in_reply_to,
+        references: context.references,
+    })
 }
 
-#[allow(clippy::too_many_arguments)]
-fn build_message(
-    sender: Mailbox,
-    to: Vec<Mailbox>,
-    cc: Vec<Mailbox>,
-    bcc: Vec<Mailbox>,
-    subject: String,
-    body: String,
-    format: BodyFormat,
-    in_reply_to: Option<String>,
-    references: Option<String>,
-) -> Result<ComposedDraft> {
+fn build_message(input: MessageInput) -> Result<ComposedDraft> {
+    let MessageInput {
+        sender,
+        to,
+        cc,
+        bcc,
+        subject,
+        body,
+        format,
+        in_reply_to,
+        references,
+    } = input;
     let mut builder = Message::builder()
         .from(sender)
         .subject(subject.clone())
