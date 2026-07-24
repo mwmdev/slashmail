@@ -46,6 +46,7 @@ pub enum Status {
 #[derive(Debug, Eq, PartialEq)]
 pub enum ResponseCode<'a> {
     Alert,
+    AppendUid { uid_validity: u32, uids: UidSet },
     BadCharset(Option<Vec<&'a str>>),
     Capabilities(Vec<Capability<'a>>),
     HighestModSeq(u64), // RFC 4551, section 3.1.1
@@ -57,6 +58,17 @@ pub enum ResponseCode<'a> {
     UidNext(u32),
     UidValidity(u32),
     Unseen(u32),
+}
+
+/// An RFC 4315 UID set, preserving the sequence-set shape returned by the server.
+#[derive(Debug, Eq, PartialEq)]
+pub struct UidSet(pub Vec<UidSetMember>);
+
+/// One member of an RFC 4315 UID set.
+#[derive(Debug, Eq, PartialEq)]
+pub enum UidSetMember {
+    Uid(u32),
+    Range(u32, u32),
 }
 
 #[derive(Debug, Eq, PartialEq)]

@@ -6,7 +6,9 @@ use native_tls::{TlsConnector, TlsStream};
 use nom;
 use std::collections::HashSet;
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::TcpStream;
+#[cfg(feature = "tls")]
+use std::net::ToSocketAddrs;
 use std::ops::{Deref, DerefMut};
 use std::str;
 use std::sync::mpsc;
@@ -41,6 +43,61 @@ impl<E> OptionExt<E> for Option<E> {
     }
 }
 
+fn append_rejection(
+    phase: AppendPhase,
+    status: imap_proto::Status,
+    information: Option<&str>,
+) -> AppendError {
+    let status = match status {
+        imap_proto::Status::No => AppendRejectStatus::No,
+        imap_proto::Status::Bad => AppendRejectStatus::Bad,
+        unexpected => {
+            return AppendError::Indeterminate {
+                phase,
+                source: Error::Parse(ParseError::Unexpected(format!(
+                    "unexpected APPEND completion status: {:?}",
+                    unexpected
+                ))),
+            }
+        }
+    };
+    AppendError::Rejected {
+        phase,
+        status,
+        information: information.map(ToString::to_string),
+    }
+}
+
+fn append_error_into_legacy(error: AppendError) -> Error {
+    match error {
+        AppendError::PreLiteral(source) | AppendError::Indeterminate { source, .. } => source,
+        AppendError::Rejected {
+            phase: AppendPhase::BeforeLiteral,
+            ..
+        } => Error::Append,
+        AppendError::Rejected {
+            status,
+            information,
+            ..
+        } => {
+            let information = information.unwrap_or_else(|| "no explanation given".to_string());
+            match status {
+                AppendRejectStatus::No => Error::No(information),
+                AppendRejectStatus::Bad => Error::Bad(information),
+            }
+        }
+        AppendError::InvalidUidSet { .. } => Error::Append,
+    }
+}
+
+fn single_append_uid(uids: &UidSet) -> Option<Uid> {
+    match uids.0.as_slice() {
+        [UidSetMember::Uid(uid)] => Some(*uid),
+        [UidSetMember::Range(start, end)] if start == end => Some(*start),
+        _ => None,
+    }
+}
+
 /// Convert the input into what [the IMAP
 /// grammar](https://tools.ietf.org/html/rfc3501#section-9)
 /// calls "quoted", which is reachable from "string" et al.
@@ -48,6 +105,13 @@ impl<E> OptionExt<E> for Option<E> {
 fn validate_str(value: &str) -> Result<String> {
     validate_str_noquote(value)?;
     Ok(quote!(value))
+}
+
+fn validate_append_mailbox(value: &str) -> Result<String> {
+    if let Some(offender) = value.chars().find(|c| c.is_control()) {
+        return Err(Error::Validate(ValidateError(offender)));
+    }
+    validate_str(value)
 }
 
 /// Ensure the input doesn't contain a command-terminator (newline), but don't quote it like
@@ -1168,6 +1232,20 @@ impl<T: Read + Write> Session<T> {
         self.append_with_flags_and_date(mailbox, content, flags, None)
     }
 
+    /// Append one message and return phase-aware completion metadata.
+    ///
+    /// Unlike [`Session::append_with_flags`], this method distinguishes failures before literal
+    /// transmission from explicit server rejection and failures that leave the save outcome
+    /// uncertain. If UIDPLUS supplies APPENDUID, exactly one UID is required.
+    pub fn append_with_flags_result<S: AsRef<str>, B: AsRef<[u8]>>(
+        &mut self,
+        mailbox: S,
+        content: B,
+        flags: &[Flag<'_>],
+    ) -> AppendResult {
+        self.append_with_flags_and_date_result(mailbox.as_ref(), content.as_ref(), flags, None)
+    }
+
     /// The [`APPEND` command](https://tools.ietf.org/html/rfc3501#section-6.3.11) can take
     /// an optional FLAGS parameter to set the flags on the new message.
     ///
@@ -1191,34 +1269,64 @@ impl<T: Read + Write> Session<T> {
         flags: &[Flag<'_>],
         date: impl Into<Option<DateTime<FixedOffset>>>,
     ) -> Result<()> {
-        let content = content.as_ref();
+        match self.append_with_flags_and_date_result(
+            mailbox.as_ref(),
+            content.as_ref(),
+            flags,
+            date.into(),
+        ) {
+            Ok(_) | Err(AppendError::InvalidUidSet { .. }) => Ok(()),
+            Err(error) => Err(append_error_into_legacy(error)),
+        }
+    }
+
+    fn append_with_flags_and_date_result(
+        &mut self,
+        mailbox: &str,
+        content: &[u8],
+        flags: &[Flag<'_>],
+        date: Option<DateTime<FixedOffset>>,
+    ) -> AppendResult {
+        let mailbox = validate_append_mailbox(mailbox).map_err(AppendError::PreLiteral)?;
         let flagstr = flags
             .iter()
             .filter(|f| **f != Flag::Recent)
             .map(|f| f.to_string())
             .collect::<Vec<String>>()
             .join(" ");
-        let datestr = match date.into() {
+        let datestr = match date {
             Some(date) => format!(" \"{}\"", date.format("%d-%h-%Y %T %z")),
             None => "".to_string(),
         };
 
         self.run_command(&format!(
-            "APPEND \"{}\" ({}){} {{{}}}",
-            mailbox.as_ref(),
+            "APPEND {} ({}){} {{{}}}",
+            mailbox,
             flagstr,
             datestr,
             content.len()
-        ))?;
-        let mut v = Vec::new();
-        self.readline(&mut v)?;
-        if !v.starts_with(b"+") {
-            return Err(Error::Append);
-        }
-        self.stream.write_all(content)?;
-        self.stream.write_all(b"\r\n")?;
-        self.stream.flush()?;
-        self.read_response().map(|_| ())
+        ))
+        .map_err(AppendError::PreLiteral)?;
+        self.read_append_continuation()?;
+        self.stream
+            .write_all(content)
+            .map_err(|source| AppendError::Indeterminate {
+                phase: AppendPhase::LiteralWrite,
+                source: source.into(),
+            })?;
+        self.stream
+            .write_all(b"\r\n")
+            .map_err(|source| AppendError::Indeterminate {
+                phase: AppendPhase::LiteralWrite,
+                source: source.into(),
+            })?;
+        self.stream
+            .flush()
+            .map_err(|source| AppendError::Indeterminate {
+                phase: AppendPhase::LiteralWrite,
+                source: source.into(),
+            })?;
+        self.read_append_completion()
     }
 
     /// The [`SEARCH` command](https://tools.ietf.org/html/rfc3501#section-6.4.4) searches the
@@ -1330,6 +1438,157 @@ impl<T: Read + Write> Connection<T> {
     fn run_command_and_read_response(&mut self, untagged_command: &str) -> Result<Vec<u8>> {
         self.run_command(untagged_command)?;
         self.read_response()
+    }
+
+    fn read_append_continuation(&mut self) -> std::result::Result<(), AppendError> {
+        let expected_tag = format!("{}{}", TAG_PREFIX, self.tag);
+        let mut data = Vec::new();
+        loop {
+            self.readline(&mut data).map_err(AppendError::PreLiteral)?;
+            match imap_proto::parse_response(&data) {
+                Ok((_, imap_proto::Response::Continue { .. })) => return Ok(()),
+                Ok((
+                    _,
+                    imap_proto::Response::Done {
+                        tag,
+                        status,
+                        information,
+                        ..
+                    },
+                )) => {
+                    if tag.as_bytes() != expected_tag.as_bytes() {
+                        return Err(AppendError::PreLiteral(Error::Parse(
+                            ParseError::Unexpected(format!(
+                                "unexpected APPEND completion tag: {:?}",
+                                tag
+                            )),
+                        )));
+                    }
+                    return match status {
+                        imap_proto::Status::No | imap_proto::Status::Bad => Err(append_rejection(
+                            AppendPhase::BeforeLiteral,
+                            status,
+                            information,
+                        )),
+                        _ => Err(AppendError::PreLiteral(Error::Append)),
+                    };
+                }
+                Ok((
+                    _,
+                    imap_proto::Response::Data {
+                        status: imap_proto::Status::Bye,
+                        ..
+                    },
+                )) => {
+                    return Err(AppendError::PreLiteral(Error::ConnectionLost));
+                }
+                Ok((_, _)) => data.clear(),
+                Err(nom::Err::Incomplete(_)) => {}
+                Err(_) => {
+                    return Err(AppendError::PreLiteral(Error::Parse(ParseError::Invalid(
+                        data,
+                    ))));
+                }
+            }
+        }
+    }
+
+    fn read_append_completion(&mut self) -> AppendResult {
+        let expected_tag = format!("{}{}", TAG_PREFIX, self.tag);
+        let mut data = Vec::new();
+        loop {
+            self.readline(&mut data)
+                .map_err(|source| AppendError::Indeterminate {
+                    phase: AppendPhase::Completion,
+                    source,
+                })?;
+            match imap_proto::parse_response(&data) {
+                Ok((
+                    _,
+                    imap_proto::Response::Done {
+                        tag,
+                        status,
+                        code,
+                        information,
+                    },
+                )) => {
+                    if tag.as_bytes() != expected_tag.as_bytes() {
+                        return Err(AppendError::Indeterminate {
+                            phase: AppendPhase::Completion,
+                            source: Error::Parse(ParseError::Unexpected(format!(
+                                "unexpected APPEND completion tag: {:?}",
+                                tag
+                            ))),
+                        });
+                    }
+
+                    if status == imap_proto::Status::No || status == imap_proto::Status::Bad {
+                        return Err(append_rejection(
+                            AppendPhase::Completion,
+                            status,
+                            information,
+                        ));
+                    }
+                    if status != imap_proto::Status::Ok {
+                        return Err(AppendError::Indeterminate {
+                            phase: AppendPhase::Completion,
+                            source: Error::Parse(ParseError::Unexpected(format!(
+                                "unexpected APPEND completion status: {:?}",
+                                status
+                            ))),
+                        });
+                    }
+
+                    let tag = tag.0;
+                    let information = information.map(ToString::to_string);
+                    return match code {
+                        Some(imap_proto::ResponseCode::AppendUid { uid_validity, uids }) => {
+                            match single_append_uid(&uids) {
+                                Some(uid) => Ok(AppendCompletion {
+                                    tag,
+                                    uid: Some(AppendUid { uid_validity, uid }),
+                                    information,
+                                }),
+                                None => Err(AppendError::InvalidUidSet {
+                                    completion: AppendCompletion {
+                                        tag,
+                                        uid: None,
+                                        information,
+                                    },
+                                    uid_validity,
+                                    uids,
+                                }),
+                            }
+                        }
+                        _ => Ok(AppendCompletion {
+                            tag,
+                            uid: None,
+                            information,
+                        }),
+                    };
+                }
+                Ok((
+                    _,
+                    imap_proto::Response::Data {
+                        status: imap_proto::Status::Bye,
+                        ..
+                    },
+                )) => {
+                    return Err(AppendError::Indeterminate {
+                        phase: AppendPhase::Completion,
+                        source: Error::ConnectionLost,
+                    });
+                }
+                Ok((_, _)) => data.clear(),
+                Err(nom::Err::Incomplete(_)) => {}
+                Err(_) => {
+                    return Err(AppendError::Indeterminate {
+                        phase: AppendPhase::Completion,
+                        source: Error::Parse(ParseError::Invalid(data)),
+                    });
+                }
+            }
+        }
     }
 
     pub(crate) fn read_response(&mut self) -> Result<Vec<u8>> {
@@ -1448,6 +1707,61 @@ mod tests {
     use super::super::error::Result;
     use super::super::mock_stream::MockStream;
     use super::*;
+    use std::cmp::min;
+    use std::io::{Error as IoError, ErrorKind};
+
+    #[derive(Debug)]
+    struct ScriptedStream {
+        read_buf: Vec<u8>,
+        read_pos: usize,
+        written_buf: Vec<u8>,
+        write_calls: usize,
+        fail_on_write_call: Option<usize>,
+    }
+
+    impl ScriptedStream {
+        fn new(read_buf: &[u8]) -> Self {
+            Self {
+                read_buf: read_buf.to_vec(),
+                read_pos: 0,
+                written_buf: Vec::new(),
+                write_calls: 0,
+                fail_on_write_call: None,
+            }
+        }
+
+        fn failing_on_write_call(mut self, call: usize) -> Self {
+            self.fail_on_write_call = Some(call);
+            self
+        }
+    }
+
+    impl Read for ScriptedStream {
+        fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+            if self.read_pos == self.read_buf.len() {
+                return Ok(0);
+            }
+            let len = min(buf.len(), self.read_buf.len() - self.read_pos);
+            buf[..len].copy_from_slice(&self.read_buf[self.read_pos..self.read_pos + len]);
+            self.read_pos += len;
+            Ok(len)
+        }
+    }
+
+    impl Write for ScriptedStream {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.write_calls += 1;
+            if self.fail_on_write_call == Some(self.write_calls) {
+                return Err(IoError::new(ErrorKind::BrokenPipe, "scripted disconnect"));
+            }
+            self.written_buf.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
 
     macro_rules! mock_session {
         ($s:expr) => {
@@ -1550,7 +1864,7 @@ mod tests {
         let client = Client::new(mock_stream);
         enum Authenticate {
             Auth,
-        };
+        }
         impl Authenticator for Authenticate {
             type Response = Vec<u8>;
             fn process(&self, challenge: &[u8]) -> Self::Response {
@@ -1980,6 +2294,179 @@ mod tests {
             session.stream.get_ref().written_buf == line.as_bytes().to_vec(),
             "Invalid command"
         );
+    }
+
+    #[test]
+    fn append_result_returns_one_authoritative_uid() {
+        let response = b"+ ready\r\n* 1 EXISTS\r\na1 OK [APPENDUID 42 7] appended\r\n".to_vec();
+        let mut session = mock_session!(MockStream::new(response));
+
+        let result = session
+            .append_with_flags_result("Drafts", b"abc", &[Flag::Draft])
+            .unwrap();
+
+        assert_eq!(
+            result,
+            AppendCompletion {
+                tag: "a1".to_string(),
+                uid: Some(AppendUid {
+                    uid_validity: 42,
+                    uid: 7,
+                }),
+                information: Some("appended".to_string()),
+            }
+        );
+        assert_eq!(
+            session.stream.get_ref().written_buf,
+            b"a1 APPEND \"Drafts\" (\\Draft) {3}\r\nabc\r\n"
+        );
+    }
+
+    #[test]
+    fn append_result_accepts_plain_ok() {
+        let response = b"+ ready\r\na1 OK appended\r\n".to_vec();
+        let mut session = mock_session!(MockStream::new(response));
+
+        let result = session
+            .append_with_flags_result("Drafts", b"abc", &[])
+            .unwrap();
+
+        assert_eq!(result.uid, None);
+        assert_eq!(result.information.as_deref(), Some("appended"));
+    }
+
+    #[test]
+    fn append_result_rejects_multiple_uids_at_single_message_boundary() {
+        let response = b"+ ready\r\na1 OK [APPENDUID 42 7:8] appended\r\n".to_vec();
+        let mut session = mock_session!(MockStream::new(response));
+
+        match session.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::InvalidUidSet {
+                completion,
+                uid_validity: 42,
+                uids,
+            }) => {
+                assert_eq!(completion.tag, "a1");
+                assert_eq!(completion.information.as_deref(), Some("appended"));
+                assert_eq!(uids, UidSet(vec![UidSetMember::Range(7, 8)]));
+            }
+            result => panic!("unexpected result {:?}", result),
+        }
+    }
+
+    #[test]
+    fn single_message_uid_boundary_rejects_empty_set() {
+        assert_eq!(single_append_uid(&UidSet(Vec::new())), None);
+    }
+
+    #[test]
+    fn append_result_distinguishes_server_rejection_before_and_after_literal() {
+        let mut before = mock_session!(MockStream::new(b"a1 NO unavailable\r\n".to_vec()));
+        match before.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::Rejected {
+                phase: AppendPhase::BeforeLiteral,
+                status: AppendRejectStatus::No,
+                information,
+            }) => assert_eq!(information.as_deref(), Some("unavailable")),
+            result => panic!("unexpected result {:?}", result),
+        }
+        assert!(!before
+            .stream
+            .get_ref()
+            .written_buf
+            .windows(3)
+            .any(|window| window == b"abc"));
+
+        let response = b"+ ready\r\na1 BAD invalid message\r\n".to_vec();
+        let mut after = mock_session!(MockStream::new(response));
+        match after.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::Rejected {
+                phase: AppendPhase::Completion,
+                status: AppendRejectStatus::Bad,
+                information,
+            }) => assert_eq!(information.as_deref(), Some("invalid message")),
+            result => panic!("unexpected result {:?}", result),
+        }
+    }
+
+    #[test]
+    fn append_result_marks_disconnects_by_phase() {
+        let mut before = mock_session!(MockStream::default().with_eof());
+        match before.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::PreLiteral(Error::ConnectionLost)) => {}
+            result => panic!("unexpected result {:?}", result),
+        }
+
+        let mut during =
+            mock_session!(ScriptedStream::new(b"+ ready\r\n").failing_on_write_call(2));
+        match during.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::Indeterminate {
+                phase: AppendPhase::LiteralWrite,
+                source: Error::Io(_),
+            }) => {}
+            result => panic!("unexpected result {:?}", result),
+        }
+
+        let mut after = mock_session!(ScriptedStream::new(b"+ ready\r\n"));
+        match after.append_with_flags_result("Drafts", b"abc", &[]) {
+            Err(AppendError::Indeterminate {
+                phase: AppendPhase::Completion,
+                source: Error::ConnectionLost,
+            }) => {}
+            result => panic!("unexpected result {:?}", result),
+        }
+    }
+
+    #[test]
+    fn append_legacy_methods_keep_unit_result() {
+        let mut plain = mock_session!(MockStream::new(b"+ ready\r\na1 OK appended\r\n".to_vec()));
+        assert_eq!(plain.append("Drafts", b"abc").unwrap(), ());
+
+        let mut flagged = mock_session!(MockStream::new(b"+ ready\r\na1 OK appended\r\n".to_vec()));
+        assert_eq!(
+            flagged
+                .append_with_flags("Drafts", b"abc", &[Flag::Draft])
+                .unwrap(),
+            ()
+        );
+
+        let mut dated = mock_session!(MockStream::new(b"+ ready\r\na1 OK appended\r\n".to_vec()));
+        assert_eq!(
+            dated
+                .append_with_flags_and_date("Drafts", b"abc", &[], None)
+                .unwrap(),
+            ()
+        );
+
+        let response = b"+ ready\r\na1 OK [APPENDUID 42 7:8] appended\r\n".to_vec();
+        let mut invalid_identity = mock_session!(MockStream::new(response));
+        assert_eq!(
+            invalid_identity
+                .append_with_flags("Drafts", b"abc", &[])
+                .unwrap(),
+            ()
+        );
+    }
+
+    #[test]
+    fn append_quotes_mailbox_and_rejects_controls_before_writing() {
+        let response = b"+ ready\r\na1 OK appended\r\n".to_vec();
+        let mut quoted = mock_session!(MockStream::new(response));
+        quoted
+            .append_with_flags_result("Drafts \"2026\"\\saved", b"abc", &[])
+            .unwrap();
+        assert!(quoted
+            .stream
+            .get_ref()
+            .written_buf
+            .starts_with(b"a1 APPEND \"Drafts \\\"2026\\\"\\\\saved\""));
+
+        let mut invalid = mock_session!(MockStream::default());
+        match invalid.append_with_flags_result("Drafts\0Injected", b"abc", &[]) {
+            Err(AppendError::PreLiteral(Error::Validate(_))) => {}
+            result => panic!("unexpected result {:?}", result),
+        }
+        assert!(invalid.stream.get_ref().written_buf.is_empty());
     }
 
     #[test]

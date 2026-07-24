@@ -2,6 +2,8 @@
 
 use std::borrow::Cow;
 
+use crate::error::Error;
+
 /// From section [2.3.1.1 of RFC 3501](https://tools.ietf.org/html/rfc3501#section-2.3.1.1).
 ///
 /// A 32-bit value assigned to each message, which when used with the unique identifier validity
@@ -217,7 +219,82 @@ mod capabilities;
 pub use self::capabilities::Capabilities;
 
 /// re-exported from imap_proto;
-pub use imap_proto::StatusAttribute;
+pub use imap_proto::{StatusAttribute, UidSet, UidSetMember};
+
+/// The authoritative identity assigned to one successfully appended message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AppendUid {
+    /// The UIDVALIDITY value for the destination mailbox.
+    pub uid_validity: u32,
+    /// The UID assigned to the appended message.
+    pub uid: Uid,
+}
+
+/// Metadata from the tagged OK response completing an APPEND command.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AppendCompletion {
+    /// The command tag echoed by the server.
+    pub tag: String,
+    /// The authoritative identity when the server supplied a valid single-message APPENDUID.
+    pub uid: Option<AppendUid>,
+    /// Human-readable completion information supplied by the server.
+    pub information: Option<String>,
+}
+
+/// The phase reached by an APPEND command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendPhase {
+    /// The message literal has not been transmitted.
+    BeforeLiteral,
+    /// Transmission of the message literal or its terminating CRLF failed.
+    LiteralWrite,
+    /// The literal was transmitted and the client was awaiting tagged completion.
+    Completion,
+}
+
+/// A server-declared APPEND rejection status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AppendRejectStatus {
+    /// The server returned NO.
+    No,
+    /// The server returned BAD.
+    Bad,
+}
+
+/// A phase-aware APPEND failure.
+#[derive(Debug)]
+pub enum AppendError {
+    /// APPEND failed before the message literal was sent.
+    PreLiteral(Error),
+    /// The server explicitly rejected APPEND.
+    Rejected {
+        /// The phase in which the tagged rejection was received.
+        phase: AppendPhase,
+        /// The tagged rejection status.
+        status: AppendRejectStatus,
+        /// Human-readable rejection information supplied by the server.
+        information: Option<String>,
+    },
+    /// The server confirmed APPEND but supplied a UID set incompatible with one-message APPEND.
+    InvalidUidSet {
+        /// Tagged completion metadata, excluding the rejected UID set.
+        completion: AppendCompletion,
+        /// The mailbox UIDVALIDITY supplied by the server.
+        uid_validity: u32,
+        /// The complete UID set supplied by the server.
+        uids: UidSet,
+    },
+    /// Transport or protocol state became uncertain after literal transmission began.
+    Indeterminate {
+        /// The phase in which the failure occurred.
+        phase: AppendPhase,
+        /// The underlying client error.
+        source: Error,
+    },
+}
+
+/// Result type for a phase-aware, single-message APPEND.
+pub type AppendResult = std::result::Result<AppendCompletion, AppendError>;
 
 /// Responses that the server sends that are not related to the current command.
 /// [RFC 3501](https://tools.ietf.org/html/rfc3501#section-7) states that clients need to be able
@@ -329,7 +406,6 @@ impl<D> ZeroCopy<D> {
     }
 }
 
-use super::error::Error;
 pub(crate) type ZeroCopyResult<T> = Result<ZeroCopy<T>, Error>;
 
 use std::ops::Deref;

@@ -12,6 +12,7 @@ use nom::IResult;
 use std::str;
 
 use crate::parser::rfc4551;
+use crate::parser::rfc4315;
 use crate::parser::rfc5464::resp_metadata;
 use crate::types::*;
 use crate::core::*;
@@ -139,6 +140,7 @@ named!(resp_text_code_unseen<ResponseCode>, do_parse!(
 named!(resp_text_code<ResponseCode>, do_parse!(
     tag!("[") >>
     coded: alt!(
+        rfc4315::resp_text_code_append_uid |
         resp_text_code_alert |
         resp_text_code_badcharset |
         resp_text_code_capability |
@@ -466,20 +468,34 @@ named!(tag<RequestId>, map!(
 //     ["[" resp-text-code "]" SP] text
 // However, examples in RFC 4551 (Conditional STORE) counteract this by giving
 // examples of `resp-text` that do not include the trailing space and text.
-named!(resp_text<(Option<ResponseCode>, Option<&str>)>, do_parse!(
-    code: opt!(resp_text_code) >>
-    text: text >>
-    ({
-        let res = if text.is_empty() {
-            None
-        } else if code.is_some() {
-            Some(&text[1..])
-        } else {
-            Some(text)
-        };
-        (code, res)
-    })
-));
+fn is_append_uid_code(input: &[u8]) -> bool {
+    const PREFIX: &[u8] = b"[APPENDUID";
+    input.len() > PREFIX.len()
+        && input[..PREFIX.len()].eq_ignore_ascii_case(PREFIX)
+        && matches!(input[PREFIX.len()], b' ' | b']')
+}
+
+fn resp_text(input: &[u8]) -> IResult<&[u8], (Option<ResponseCode<'_>>, Option<&str>)> {
+    let (input, code) = if is_append_uid_code(input) {
+        let (input, code) = resp_text_code(input)?;
+        (input, Some(code))
+    } else {
+        match resp_text_code(input) {
+            Ok((input, code)) => (input, Some(code)),
+            Err(nom::Err::Error(_)) => (input, None),
+            Err(error) => return Err(error),
+        }
+    };
+    let (input, response_text) = text(input)?;
+    let information = if response_text.is_empty() {
+        None
+    } else if code.is_some() {
+        Some(&response_text[1..])
+    } else {
+        Some(response_text)
+    };
+    Ok((input, (code, information)))
+}
 
 named!(continue_req<Response>, do_parse!(
     tag!("+") >>
@@ -822,6 +838,58 @@ mod tests {
                 information: Some("[BADCHARSET ()] error")
             })) => {}
             rsp => panic!("unexpected response {:?}", rsp)
+        }
+    }
+
+    #[test]
+    fn test_append_uid_response_code() {
+        match parse_response(b"a1 OK [APPENDUID 38505 3955] APPEND completed\r\n") {
+            Ok((_, Response::Done {
+                status: Status::Ok,
+                code: Some(ResponseCode::AppendUid {
+                    uid_validity: 38505,
+                    uids,
+                }),
+                information: Some("APPEND completed"),
+                ..
+            })) => {
+                assert_eq!(uids, UidSet(vec![UidSetMember::Uid(3955)]));
+            }
+            rsp => panic!("unexpected response {:?}", rsp),
+        }
+
+        match parse_response(b"a1 OK [APPENDUID 38505 3955:3957,4000] done\r\n") {
+            Ok((_, Response::Done {
+                code: Some(ResponseCode::AppendUid { uids, .. }),
+                ..
+            })) => {
+                assert_eq!(
+                    uids,
+                    UidSet(vec![
+                        UidSetMember::Range(3955, 3957),
+                        UidSetMember::Uid(4000),
+                    ])
+                );
+            }
+            rsp => panic!("unexpected response {:?}", rsp),
+        }
+    }
+
+    #[test]
+    fn malformed_append_uid_is_not_treated_as_plain_success_text() {
+        for response in &[
+            &b"a1 OK [APPENDUID 38505] done\r\n"[..],
+            &b"a1 OK [APPENDUID nope 3955] done\r\n"[..],
+            &b"a1 OK [APPENDUID 38505 0] done\r\n"[..],
+            &b"a1 OK [APPENDUID 4294967296 3955] done\r\n"[..],
+            &b"a1 OK [APPENDUID 38505 4294967296] done\r\n"[..],
+            &b"a1 OK [APPENDUID 38505 1:] done\r\n"[..],
+        ] {
+            assert!(
+                parse_response(response).is_err(),
+                "malformed APPENDUID parsed as success: {:?}",
+                String::from_utf8_lossy(response)
+            );
         }
     }
 

@@ -63,6 +63,18 @@ impl ImapSession {
         }
     }
 
+    pub fn append_with_flags_result(
+        &mut self,
+        mailbox: &str,
+        content: &[u8],
+        flags: &[imap::types::Flag<'_>],
+    ) -> imap::types::AppendResult {
+        match &mut self.inner {
+            Inner::Plain(s) => s.append_with_flags_result(mailbox, content, flags),
+            Inner::Tls(s) => s.append_with_flags_result(mailbox, content, flags),
+        }
+    }
+
     pub fn uid_mv(&mut self, uid_set: &str, dest: &str) -> imap::error::Result<()> {
         match &mut self.inner {
             Inner::Plain(s) => s.uid_mv(uid_set, dest),
@@ -214,7 +226,7 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
         Inner::Tls(s) => s.capabilities(),
     }
     .context("Failed to fetch capabilities")?;
-    let capabilities = ["SORT", "MOVE", "QUOTA"]
+    let capabilities = ["SORT", "MOVE", "QUOTA", "UIDPLUS"]
         .iter()
         .filter(|c| caps.has_str(**c))
         .map(|c| c.to_string())
