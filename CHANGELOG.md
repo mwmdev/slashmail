@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/),
 and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- `draft` command for saving plain-text or HTML new-message drafts with structured To, Cc, Bcc, and subject fields
+- `reply` command for saving automatically addressed and threaded reply-all drafts by source folder and UID, with optional `--no-quote`
+- Optional top-level and per-account `sender` and `drafts_folder` configuration
+- Draft destination discovery through the server-designated selectable `\Drafts` mailbox, with `--drafts-folder` override
+- Stable saved-draft receipt containing account, folder, UID, recipients, and subject
+
+### Security
+
+- Draft bodies are read exclusively from stdin; draft commands require environment-based credentials and never let an interactive password prompt consume piped content
+- Draft headers and destination names reject malformed or control-bearing input, and ambiguous post-APPEND outcomes are never retried automatically
+
 ## [0.4.0] - 2026-04-01
 
 ### Added
