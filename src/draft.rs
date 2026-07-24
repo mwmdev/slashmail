@@ -705,10 +705,7 @@ fn format_message_ids(ids: &[String]) -> String {
 
 fn normalize_reply_subject(subject: &str) -> String {
     let mut remainder = subject.trim();
-    loop {
-        let Some(prefix) = remainder.get(..3) else {
-            break;
-        };
+    while let Some(prefix) = remainder.get(..3) {
         if prefix.eq_ignore_ascii_case("re:") {
             remainder = remainder[3..].trim_start();
         } else {

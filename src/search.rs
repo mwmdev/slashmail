@@ -483,7 +483,7 @@ fn fetch_messages(
             .collect())
     } else {
         let mut messages: Vec<MessageRow> = by_uid.into_values().collect();
-        messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        messages.sort_by_key(|message| std::cmp::Reverse(message.timestamp));
         if let Some(n) = limit {
             messages.truncate(n);
         }
@@ -524,7 +524,7 @@ pub fn search(session: &mut ImapSession, criteria: &SearchCriteria) -> Result<Ve
                 }
             }
         }
-        all_messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        all_messages.sort_by_key(|message| std::cmp::Reverse(message.timestamp));
         if let Some(n) = criteria.limit {
             all_messages.truncate(n);
         }

@@ -725,7 +725,7 @@ fn tag_messages(messages: &mut [display::MessageRow], account: &config::Resolved
 }
 
 fn sort_and_limit_messages(messages: &mut Vec<display::MessageRow>, limit: Option<usize>) {
-    messages.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+    messages.sort_by_key(|message| std::cmp::Reverse(message.timestamp));
     if let Some(n) = limit {
         messages.truncate(n);
     }
