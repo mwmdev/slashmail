@@ -1,3 +1,7 @@
+use crate::draft::{
+    AppendAttempt, DraftMailboxSession, HeaderFetch, IndeterminatePhase, MailboxListing,
+};
+use crate::search;
 use anyhow::{Context, Result};
 use imap::Session;
 use std::collections::HashSet;
@@ -150,6 +154,90 @@ impl ImapSession {
             self.expunge().context("EXPUNGE failed")?;
         }
         Ok(())
+    }
+}
+
+impl DraftMailboxSession for ImapSession {
+    fn list_mailboxes(&mut self) -> Result<Vec<MailboxListing>> {
+        let listed = self
+            .list(Some(""), Some("*"))
+            .map_err(|_| anyhow::anyhow!("Failed to enumerate mailboxes"))?;
+        Ok(listed
+            .iter()
+            .map(|mailbox| MailboxListing {
+                name: mailbox.name().to_string(),
+                attributes: mailbox
+                    .attributes()
+                    .iter()
+                    .map(name_attribute_text)
+                    .collect(),
+            })
+            .collect())
+    }
+
+    fn append_draft(&mut self, folder: &str, bytes: &[u8]) -> AppendAttempt {
+        use imap::types::AppendError;
+
+        match self.append_with_flags_result(folder, bytes, &[imap::types::Flag::Draft]) {
+            Ok(completion) => AppendAttempt::Saved {
+                uid: completion.uid.map(|identity| identity.uid),
+            },
+            Err(AppendError::InvalidUidSet { .. }) => AppendAttempt::SavedWithInvalidUidSet,
+            Err(AppendError::PreLiteral(_)) => AppendAttempt::PreLiteralFailure,
+            Err(AppendError::Rejected { .. }) => AppendAttempt::Rejected,
+            Err(AppendError::Indeterminate { phase, .. }) => match phase {
+                imap::types::AppendPhase::BeforeLiteral => AppendAttempt::PreLiteralFailure,
+                imap::types::AppendPhase::LiteralWrite => AppendAttempt::Indeterminate {
+                    phase: IndeterminatePhase::LiteralWrite,
+                },
+                imap::types::AppendPhase::Completion => AppendAttempt::Indeterminate {
+                    phase: IndeterminatePhase::Completion,
+                },
+            },
+        }
+    }
+
+    fn select_mailbox(&mut self, folder: &str) -> Result<()> {
+        self.select(folder)
+            .map(|_| ())
+            .map_err(|_| anyhow::anyhow!("Failed to select the Drafts destination"))
+    }
+
+    fn search_message_id(&mut self, message_id: &str) -> Result<Vec<u32>> {
+        let query = format!("HEADER Message-ID {}", search::imap_quote(message_id));
+        let mut uids = self
+            .uid_search(&query)
+            .map_err(|_| anyhow::anyhow!("Failed to search for the saved draft identity"))?
+            .into_iter()
+            .collect::<Vec<_>>();
+        uids.sort_unstable();
+        Ok(uids)
+    }
+
+    fn fetch_message_id_header(&mut self, uid: u32) -> Result<Vec<HeaderFetch>> {
+        let fetches = self
+            .uid_fetch(
+                &uid.to_string(),
+                "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]",
+            )
+            .map_err(|_| anyhow::anyhow!("Failed to verify a saved draft identity"))?;
+        Ok(fetches
+            .iter()
+            .map(|fetch| HeaderFetch {
+                uid: fetch.uid,
+                header: fetch.header().map(<[u8]>::to_vec),
+            })
+            .collect())
+    }
+}
+
+fn name_attribute_text(attribute: &imap::types::NameAttribute<'_>) -> String {
+    match attribute {
+        imap::types::NameAttribute::NoInferiors => "\\Noinferiors".to_string(),
+        imap::types::NameAttribute::NoSelect => "\\Noselect".to_string(),
+        imap::types::NameAttribute::Marked => "\\Marked".to_string(),
+        imap::types::NameAttribute::Unmarked => "\\Unmarked".to_string(),
+        imap::types::NameAttribute::Custom(value) => value.to_string(),
     }
 }
 

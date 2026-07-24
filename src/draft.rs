@@ -42,6 +42,65 @@ pub struct ComposedDraft {
     pub subject: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MailboxListing {
+    pub name: String,
+    pub attributes: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AppendAttempt {
+    Saved { uid: Option<u32> },
+    SavedWithInvalidUidSet,
+    PreLiteralFailure,
+    Rejected,
+    Indeterminate { phase: IndeterminatePhase },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IndeterminatePhase {
+    LiteralWrite,
+    Completion,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveOutcome {
+    Saved { uid: u32 },
+    SavedUidUnresolved,
+    Unknown,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftReceipt {
+    pub account: String,
+    pub folder: String,
+    pub uid: u32,
+    pub to: Vec<String>,
+    pub cc: Vec<String>,
+    pub bcc: Vec<String>,
+    pub subject: String,
+}
+
+pub trait DraftMailboxSession {
+    fn list_mailboxes(&mut self) -> Result<Vec<MailboxListing>>;
+    fn append_draft(&mut self, folder: &str, bytes: &[u8]) -> AppendAttempt;
+    fn select_mailbox(&mut self, folder: &str) -> Result<()>;
+    fn search_message_id(&mut self, message_id: &str) -> Result<Vec<u32>>;
+    fn fetch_message_id_header(&mut self, uid: u32) -> Result<Vec<HeaderFetch>>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderFetch {
+    pub uid: Option<u32>,
+    pub header: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageFetch {
+    pub uid: Option<u32>,
+    pub body: Option<Vec<u8>>,
+}
+
 #[derive(Debug)]
 struct ReplyContext {
     to: Vec<Mailbox>,
@@ -72,6 +131,219 @@ pub fn parse_mailbox(value: &str, field: &str) -> Result<Mailbox> {
         .with_context(|| format!("Invalid {field} mailbox"))?;
     validate_mailbox(&mailbox, field)?;
     Ok(mailbox)
+}
+
+pub fn resolve_destination(
+    command_override: Option<&str>,
+    configured: Option<&str>,
+    mailboxes: &[MailboxListing],
+) -> Result<String> {
+    let requested = command_override.or(configured);
+    if let Some(requested) = requested {
+        validate_header_text(requested, "Drafts folder")?;
+        let matches = mailboxes
+            .iter()
+            .filter(|mailbox| mailbox.name == requested && is_selectable(mailbox))
+            .collect::<Vec<_>>();
+        return match matches.as_slice() {
+            [mailbox] => Ok(mailbox.name.clone()),
+            _ => bail!("Drafts folder '{requested}' does not exist or is not selectable"),
+        };
+    }
+
+    let candidates = mailboxes
+        .iter()
+        .filter(|mailbox| is_selectable(mailbox) && has_attribute(mailbox, "\\Drafts"))
+        .collect::<Vec<_>>();
+    match candidates.as_slice() {
+        [mailbox] => Ok(mailbox.name.clone()),
+        [] => bail!(
+            "No selectable server-designated Drafts folder found; use --drafts-folder or configure drafts_folder"
+        ),
+        _ => bail!(
+            "Multiple selectable server-designated Drafts folders found; use --drafts-folder or configure drafts_folder"
+        ),
+    }
+}
+
+fn is_selectable(mailbox: &MailboxListing) -> bool {
+    !has_attribute(mailbox, "\\Noselect")
+}
+
+fn has_attribute(mailbox: &MailboxListing, expected: &str) -> bool {
+    mailbox
+        .attributes
+        .iter()
+        .any(|attribute| attribute.eq_ignore_ascii_case(expected))
+}
+
+pub fn require_exact_source(fetches: Vec<MessageFetch>, requested_uid: u32) -> Result<Vec<u8>> {
+    let mut matching = fetches
+        .into_iter()
+        .filter(|fetch| fetch.uid == Some(requested_uid));
+    let fetch = matching
+        .next()
+        .ok_or_else(|| anyhow!("Reply source UID {requested_uid} was not found"))?;
+    if matching.next().is_some() {
+        bail!("Reply source UID {requested_uid} returned more than one message");
+    }
+    fetch
+        .body
+        .ok_or_else(|| anyhow!("Reply source UID {requested_uid} has no message body"))
+}
+
+pub fn save_composed_draft<F>(
+    session: &mut dyn DraftMailboxSession,
+    reconnect: F,
+    folder: &str,
+    draft: &ComposedDraft,
+) -> Result<SaveOutcome>
+where
+    F: FnOnce() -> Result<Box<dyn DraftMailboxSession>>,
+{
+    match session.append_draft(folder, &draft.bytes) {
+        AppendAttempt::Saved { uid: Some(uid) } => Ok(SaveOutcome::Saved { uid }),
+        AppendAttempt::Saved { uid: None } | AppendAttempt::SavedWithInvalidUidSet => {
+            match recover_uid(session, folder, &draft.message_id) {
+                Ok(Some(uid)) => Ok(SaveOutcome::Saved { uid }),
+                Ok(None) | Err(_) => Ok(SaveOutcome::SavedUidUnresolved),
+            }
+        }
+        AppendAttempt::PreLiteralFailure => {
+            bail!("Draft was not saved because APPEND failed before message upload")
+        }
+        AppendAttempt::Rejected => {
+            bail!("Draft was rejected by the server and was not saved")
+        }
+        AppendAttempt::Indeterminate { .. } => {
+            let mut recovery = match reconnect() {
+                Ok(session) => session,
+                Err(_) => return Ok(SaveOutcome::Unknown),
+            };
+            match recover_uid(recovery.as_mut(), folder, &draft.message_id) {
+                Ok(Some(uid)) => Ok(SaveOutcome::Saved { uid }),
+                Ok(None) | Err(_) => Ok(SaveOutcome::Unknown),
+            }
+        }
+    }
+}
+
+pub fn recover_uid(
+    session: &mut dyn DraftMailboxSession,
+    folder: &str,
+    message_id: &str,
+) -> Result<Option<u32>> {
+    session.select_mailbox(folder)?;
+    let candidates = session.search_message_id(message_id)?;
+    let mut exact = Vec::new();
+    for uid in candidates {
+        let fetches = session.fetch_message_id_header(uid)?;
+        if fetches.len() != 1 || fetches[0].uid != Some(uid) {
+            continue;
+        }
+        let Some(header) = fetches[0].header.as_deref() else {
+            continue;
+        };
+        if parsed_message_id(header).as_deref() == Some(message_id) {
+            exact.push(uid);
+        }
+    }
+    exact.sort_unstable();
+    exact.dedup();
+    Ok(match exact.as_slice() {
+        [uid] => Some(*uid),
+        _ => None,
+    })
+}
+
+fn parsed_message_id(header: &[u8]) -> Option<String> {
+    let (headers, _) = mailparse::parse_headers(header).ok()?;
+    let values = headers.get_all_values("Message-ID");
+    if values.len() != 1 {
+        return None;
+    }
+    let ids = mailparse::msgidparse(&values[0]).ok()?;
+    if ids.len() != 1 || !is_valid_message_id(&ids[0]) {
+        return None;
+    }
+    Some(format!("<{}>", ids[0]))
+}
+
+pub fn render_receipt(receipt: &DraftReceipt) -> String {
+    format!(
+        "Draft saved: Account={} | Folder={} | UID={} | To={} | Cc={} | Bcc={} | Subject={}",
+        sanitize_receipt_field(&receipt.account),
+        sanitize_receipt_field(&receipt.folder),
+        receipt.uid,
+        render_receipt_list(&receipt.to),
+        render_receipt_list(&receipt.cc),
+        render_receipt_list(&receipt.bcc),
+        sanitize_receipt_field(&receipt.subject),
+    )
+}
+
+fn render_receipt_list(values: &[String]) -> String {
+    sanitize_receipt_field(&values.join(", "))
+}
+
+pub fn sanitize_receipt_field(value: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum EscapeState {
+        Text,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+    }
+
+    let mut output = String::with_capacity(value.len());
+    let mut state = EscapeState::Text;
+    for character in value.chars() {
+        state = match state {
+            EscapeState::Text => match character {
+                '\u{1b}' => EscapeState::Escape,
+                '\u{009b}' => EscapeState::Csi,
+                '\u{009d}' => EscapeState::Osc,
+                '\u{2028}' | '\u{2029}' => {
+                    output.push(' ');
+                    EscapeState::Text
+                }
+                character if character.is_control() || matches!(character as u32, 0x80..=0x9f) => {
+                    output.push(' ');
+                    EscapeState::Text
+                }
+                character => {
+                    output.push(character);
+                    EscapeState::Text
+                }
+            },
+            EscapeState::Escape => match character {
+                '[' => EscapeState::Csi,
+                ']' => EscapeState::Osc,
+                _ => EscapeState::Text,
+            },
+            EscapeState::Csi => {
+                if matches!(character as u32, 0x40..=0x7e) {
+                    EscapeState::Text
+                } else {
+                    EscapeState::Csi
+                }
+            }
+            EscapeState::Osc => match character {
+                '\u{7}' => EscapeState::Text,
+                '\u{1b}' => EscapeState::OscEscape,
+                _ => EscapeState::Osc,
+            },
+            EscapeState::OscEscape => {
+                if character == '\\' {
+                    EscapeState::Text
+                } else {
+                    EscapeState::Osc
+                }
+            }
+        };
+    }
+    output
 }
 
 pub fn compose_new_draft(input: NewDraftInput) -> Result<ComposedDraft> {
@@ -963,5 +1235,308 @@ Content-Transfer-Encoding: base64\r\n\r\n\
 
         assert!(body.contains("sender@example.com wrote:"));
         assert!(!body.contains("\n>"));
+    }
+
+    #[test]
+    fn destination_resolution_honors_precedence_and_special_use() {
+        let mailboxes = vec![
+            MailboxListing {
+                name: "Nested/Entwürfe".to_string(),
+                attributes: vec!["\\dRaFtS".to_string(), "\\HasNoChildren".to_string()],
+            },
+            MailboxListing {
+                name: "Disabled".to_string(),
+                attributes: vec!["\\DRAFTS".to_string(), "\\NOSELECT".to_string()],
+            },
+            MailboxListing {
+                name: "Configured".to_string(),
+                attributes: Vec::new(),
+            },
+            MailboxListing {
+                name: "Command".to_string(),
+                attributes: Vec::new(),
+            },
+        ];
+
+        assert_eq!(
+            resolve_destination(Some("Command"), Some("Configured"), &mailboxes).unwrap(),
+            "Command"
+        );
+        assert_eq!(
+            resolve_destination(None, Some("Configured"), &mailboxes).unwrap(),
+            "Configured"
+        );
+        assert_eq!(
+            resolve_destination(None, None, &mailboxes).unwrap(),
+            "Nested/Entwürfe"
+        );
+        assert!(resolve_destination(Some("Stale"), None, &mailboxes).is_err());
+        assert!(resolve_destination(Some("Disabled"), None, &mailboxes).is_err());
+    }
+
+    #[test]
+    fn destination_resolution_rejects_zero_and_multiple_candidates() {
+        assert!(resolve_destination(None, None, &[]).is_err());
+        let mailboxes = vec![
+            MailboxListing {
+                name: "Drafts".to_string(),
+                attributes: vec!["\\Drafts".to_string()],
+            },
+            MailboxListing {
+                name: "Other/Drafts".to_string(),
+                attributes: vec!["\\drafts".to_string()],
+            },
+        ];
+        assert!(resolve_destination(None, None, &mailboxes).is_err());
+    }
+
+    #[test]
+    fn exact_source_requires_one_matching_uid_and_body() {
+        assert_eq!(
+            require_exact_source(
+                vec![MessageFetch {
+                    uid: Some(42),
+                    body: Some(b"message".to_vec()),
+                }],
+                42
+            )
+            .unwrap(),
+            b"message"
+        );
+        assert!(require_exact_source(Vec::new(), 42).is_err());
+        assert!(require_exact_source(
+            vec![
+                MessageFetch {
+                    uid: Some(42),
+                    body: Some(Vec::new()),
+                },
+                MessageFetch {
+                    uid: Some(42),
+                    body: Some(Vec::new()),
+                },
+            ],
+            42
+        )
+        .is_err());
+        assert!(require_exact_source(
+            vec![MessageFetch {
+                uid: Some(41),
+                body: Some(Vec::new()),
+            }],
+            42
+        )
+        .is_err());
+    }
+
+    #[derive(Default)]
+    struct FakeSession {
+        append: Option<AppendAttempt>,
+        append_count: usize,
+        search: Vec<u32>,
+        headers: std::collections::HashMap<u32, Vec<HeaderFetch>>,
+        fail_recovery: bool,
+    }
+
+    impl DraftMailboxSession for FakeSession {
+        fn list_mailboxes(&mut self) -> Result<Vec<MailboxListing>> {
+            Ok(Vec::new())
+        }
+
+        fn append_draft(&mut self, _folder: &str, _bytes: &[u8]) -> AppendAttempt {
+            self.append_count += 1;
+            self.append.take().unwrap()
+        }
+
+        fn select_mailbox(&mut self, _folder: &str) -> Result<()> {
+            if self.fail_recovery {
+                bail!("fake select failure")
+            }
+            Ok(())
+        }
+
+        fn search_message_id(&mut self, _message_id: &str) -> Result<Vec<u32>> {
+            Ok(self.search.clone())
+        }
+
+        fn fetch_message_id_header(&mut self, uid: u32) -> Result<Vec<HeaderFetch>> {
+            Ok(self.headers.remove(&uid).unwrap_or_default())
+        }
+    }
+
+    fn composed_for_save() -> ComposedDraft {
+        compose_new_draft(new_input()).unwrap()
+    }
+
+    fn header_fetch(uid: u32, message_id: &str) -> HeaderFetch {
+        HeaderFetch {
+            uid: Some(uid),
+            header: Some(format!("Message-ID: {message_id}\r\n\r\n").into_bytes()),
+        }
+    }
+
+    #[test]
+    fn save_uses_appenduid_without_recovery_and_appends_once() {
+        let draft = composed_for_save();
+        let mut session = FakeSession {
+            append: Some(AppendAttempt::Saved { uid: Some(77) }),
+            ..FakeSession::default()
+        };
+        let outcome = save_composed_draft(
+            &mut session,
+            || bail!("must not reconnect"),
+            "Drafts",
+            &draft,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Saved { uid: 77 });
+        assert_eq!(session.append_count, 1);
+    }
+
+    #[test]
+    fn saved_without_uid_requires_one_structurally_exact_header() {
+        let draft = composed_for_save();
+        let mut session = FakeSession {
+            append: Some(AppendAttempt::Saved { uid: None }),
+            search: vec![10, 11],
+            headers: [
+                (
+                    10,
+                    vec![header_fetch(10, &format!("prefix{}", draft.message_id))],
+                ),
+                (11, vec![header_fetch(11, &draft.message_id)]),
+            ]
+            .into_iter()
+            .collect(),
+            ..FakeSession::default()
+        };
+        let outcome = save_composed_draft(
+            &mut session,
+            || bail!("must not reconnect"),
+            "Drafts",
+            &draft,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Saved { uid: 11 });
+        assert_eq!(session.append_count, 1);
+    }
+
+    #[test]
+    fn saved_recovery_zero_or_multiple_exact_is_unresolved() {
+        let draft = composed_for_save();
+        for exact_count in [0, 2] {
+            let mut headers = std::collections::HashMap::new();
+            for uid in 1..=exact_count {
+                headers.insert(uid, vec![header_fetch(uid, &draft.message_id)]);
+            }
+            let mut session = FakeSession {
+                append: Some(AppendAttempt::SavedWithInvalidUidSet),
+                search: (1..=exact_count).collect(),
+                headers,
+                ..FakeSession::default()
+            };
+            assert_eq!(
+                save_composed_draft(
+                    &mut session,
+                    || bail!("must not reconnect"),
+                    "Drafts",
+                    &draft
+                )
+                .unwrap(),
+                SaveOutcome::SavedUidUnresolved
+            );
+            assert_eq!(session.append_count, 1);
+        }
+    }
+
+    #[test]
+    fn indeterminate_reconnects_for_recovery_without_second_append() {
+        let draft = composed_for_save();
+        let recovered_id = draft.message_id.clone();
+        let mut initial = FakeSession {
+            append: Some(AppendAttempt::Indeterminate {
+                phase: IndeterminatePhase::Completion,
+            }),
+            ..FakeSession::default()
+        };
+        let outcome = save_composed_draft(
+            &mut initial,
+            move || {
+                Ok(Box::new(FakeSession {
+                    search: vec![91],
+                    headers: [(91, vec![header_fetch(91, &recovered_id)])]
+                        .into_iter()
+                        .collect(),
+                    ..FakeSession::default()
+                }))
+            },
+            "Drafts",
+            &draft,
+        )
+        .unwrap();
+
+        assert_eq!(outcome, SaveOutcome::Saved { uid: 91 });
+        assert_eq!(initial.append_count, 1);
+    }
+
+    #[test]
+    fn indeterminate_without_recovery_is_unknown() {
+        let draft = composed_for_save();
+        for phase in [
+            IndeterminatePhase::LiteralWrite,
+            IndeterminatePhase::Completion,
+        ] {
+            let mut session = FakeSession {
+                append: Some(AppendAttempt::Indeterminate { phase }),
+                ..FakeSession::default()
+            };
+            assert_eq!(
+                save_composed_draft(&mut session, || bail!("reconnect failed"), "Drafts", &draft)
+                    .unwrap(),
+                SaveOutcome::Unknown
+            );
+            assert_eq!(session.append_count, 1);
+        }
+    }
+
+    #[test]
+    fn pre_literal_and_rejection_fail_without_reconnect_or_retry() {
+        let draft = composed_for_save();
+        for append in [AppendAttempt::PreLiteralFailure, AppendAttempt::Rejected] {
+            let mut session = FakeSession {
+                append: Some(append),
+                ..FakeSession::default()
+            };
+            assert!(save_composed_draft(
+                &mut session,
+                || bail!("must not reconnect"),
+                "Drafts",
+                &draft
+            )
+            .is_err());
+            assert_eq!(session.append_count, 1);
+        }
+    }
+
+    #[test]
+    fn receipt_is_one_stable_control_free_line() {
+        let receipt = DraftReceipt {
+            account: "\u{1b}[31mwork\u{1b}[0m".to_string(),
+            folder: "Drafts\u{1b}]0;malicious title\u{7}\nInjected".to_string(),
+            uid: 42,
+            to: vec!["A <a@example.com>\tB".to_string()],
+            cc: Vec::new(),
+            bcc: vec!["secret@example.com\u{9b}2J".to_string()],
+            subject: "Hello\r\nWorld\u{2028}Again".to_string(),
+        };
+        let rendered = render_receipt(&receipt);
+
+        assert_eq!(
+            rendered,
+            "Draft saved: Account=work | Folder=Drafts Injected | UID=42 | To=A <a@example.com> B | Cc= | Bcc=secret@example.com | Subject=Hello  World Again"
+        );
+        assert!(!rendered.chars().any(char::is_control));
+        assert_eq!(rendered.lines().count(), 1);
     }
 }

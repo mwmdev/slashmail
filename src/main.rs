@@ -1,4 +1,4 @@
-use slashmail::{config, connection, delete, display, export, read, search};
+use slashmail::{config, connection, delete, display, draft, export, read, search};
 
 use anyhow::{bail, Context, Result};
 use clap::parser::ValueSource;
@@ -6,6 +6,7 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Color, Table};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -82,6 +83,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Save a new unsent email draft
+    Draft(DraftArgs),
+    /// Save an unsent reply draft for one message UID
+    Reply(ReplyArgs),
     /// Search messages by criteria
     Search(SearchArgs),
     /// Display the content of matching messages
@@ -109,6 +114,56 @@ enum Commands {
     /// Generate man page
     #[command(hide = true)]
     Manpage,
+}
+
+#[derive(Parser)]
+struct DraftArgs {
+    /// Recipient mailbox (repeat once per recipient)
+    #[arg(long, required = true)]
+    to: Vec<String>,
+
+    /// Cc mailbox (repeat once per recipient)
+    #[arg(long)]
+    cc: Vec<String>,
+
+    /// Bcc mailbox (repeat once per recipient)
+    #[arg(long)]
+    bcc: Vec<String>,
+
+    /// Draft subject
+    #[arg(long, default_value = "")]
+    subject: String,
+
+    /// Treat stdin as an HTML body instead of plain text
+    #[arg(long)]
+    html: bool,
+
+    /// Destination Drafts mailbox
+    #[arg(long)]
+    drafts_folder: Option<String>,
+}
+
+#[derive(Parser)]
+struct ReplyArgs {
+    /// UID of the source message
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+    uid: u32,
+
+    /// Folder containing the source message
+    #[arg(short, long)]
+    folder: Option<String>,
+
+    /// Treat stdin as an HTML body instead of plain text
+    #[arg(long)]
+    html: bool,
+
+    /// Omit the quoted original message
+    #[arg(long)]
+    no_quote: bool,
+
+    /// Destination Drafts mailbox
+    #[arg(long)]
+    drafts_folder: Option<String>,
 }
 
 #[derive(Parser)]
@@ -373,6 +428,257 @@ fn get_password_for_account(account: &config::ResolvedAccount) -> Result<String>
         .without_confirmation()
         .prompt()
         .context("Password prompt failed")
+}
+
+struct DraftCredential(String);
+
+impl DraftCredential {
+    fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for DraftCredential {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+fn draft_credential_with<F>(
+    account: &config::ResolvedAccount,
+    mut environment: F,
+) -> Result<DraftCredential>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let variable = match account.pass_env.as_deref() {
+        Some(variable) => variable,
+        None if account.name.is_none() => "SLASHMAIL_PASS",
+        None => {
+            bail!(
+                "Account '{}' must configure pass_env for draft and reply commands",
+                account.label()
+            )
+        }
+    };
+    let password = environment(variable)
+        .filter(|password| !password.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required password environment variable '{variable}' is missing or empty"
+            )
+        })?;
+    Ok(DraftCredential(password))
+}
+
+fn read_draft_body_with<R, F>(
+    account: &config::ResolvedAccount,
+    environment: F,
+    mut reader: R,
+) -> Result<(DraftCredential, String)>
+where
+    R: Read,
+    F: FnMut(&str) -> Option<String>,
+{
+    let credential = draft_credential_with(account, environment)?;
+    let mut body = String::new();
+    reader
+        .read_to_string(&mut body)
+        .context("Failed to read the draft body from stdin")?;
+    Ok((credential, body))
+}
+
+struct DraftSessionFactory<'a> {
+    account: &'a config::ResolvedAccount,
+    credential: DraftCredential,
+}
+
+impl DraftSessionFactory<'_> {
+    fn connect(&self) -> Result<connection::ImapSession> {
+        connection::connect(
+            &self.account.host,
+            self.account.port,
+            self.account.tls,
+            &self.account.user,
+            self.credential.expose(),
+        )
+        .map_err(|_| anyhow::anyhow!("Failed to connect or authenticate the draft account"))
+    }
+}
+
+fn draft_sender(account: &config::ResolvedAccount) -> Result<lettre::message::Mailbox> {
+    let value = account.sender.as_deref().unwrap_or(&account.user);
+    draft::parse_mailbox(value, "sender").map_err(|_| {
+        if account.sender.is_some() {
+            anyhow::anyhow!("The configured sender is not a valid mailbox")
+        } else {
+            anyhow::anyhow!(
+                "The IMAP username is not a sender mailbox; configure sender for this account"
+            )
+        }
+    })
+}
+
+fn parse_recipient_flags(values: &[String], field: &str) -> Result<Vec<lettre::message::Mailbox>> {
+    values
+        .iter()
+        .map(|value| draft::parse_mailbox(value, field))
+        .collect()
+}
+
+fn resolve_drafts_folder(
+    session: &mut connection::ImapSession,
+    account: &config::ResolvedAccount,
+    command_override: Option<&str>,
+) -> Result<String> {
+    let mailboxes = draft::DraftMailboxSession::list_mailboxes(session)?;
+    draft::resolve_destination(
+        command_override,
+        account.drafts_folder.as_deref(),
+        &mailboxes,
+    )
+}
+
+fn fetch_reply_source(
+    session: &mut connection::ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<Vec<u8>> {
+    session
+        .select(folder)
+        .map_err(|_| anyhow::anyhow!("Failed to select the reply source folder"))?;
+    let fetches = session
+        .uid_fetch(&uid.to_string(), "BODY.PEEK[]")
+        .map_err(|_| anyhow::anyhow!("Failed to fetch the reply source message"))?;
+    let messages = fetches
+        .iter()
+        .map(|fetch| draft::MessageFetch {
+            uid: fetch.uid,
+            body: fetch.body().map(<[u8]>::to_vec),
+        })
+        .collect();
+    draft::require_exact_source(messages, uid)
+}
+
+fn draft_receipt(
+    account: &config::ResolvedAccount,
+    folder: &str,
+    uid: u32,
+    composed: &draft::ComposedDraft,
+) -> draft::DraftReceipt {
+    draft::DraftReceipt {
+        account: account.label().to_string(),
+        folder: folder.to_string(),
+        uid,
+        to: composed.to.iter().map(ToString::to_string).collect(),
+        cc: composed.cc.iter().map(ToString::to_string).collect(),
+        bcc: composed.bcc.iter().map(ToString::to_string).collect(),
+        subject: composed.subject.clone(),
+    }
+}
+
+fn report_save_outcome(
+    outcome: draft::SaveOutcome,
+    account: &config::ResolvedAccount,
+    folder: &str,
+    composed: &draft::ComposedDraft,
+) -> Result<()> {
+    match outcome {
+        draft::SaveOutcome::Saved { uid } => {
+            println!(
+                "{}",
+                draft::render_receipt(&draft_receipt(account, folder, uid, composed))
+            );
+            Ok(())
+        }
+        draft::SaveOutcome::SavedUidUnresolved => {
+            bail!(
+                "The draft was saved, but its UID could not be resolved; inspect the Drafts folder before retrying"
+            )
+        }
+        draft::SaveOutcome::Unknown => {
+            bail!(
+                "The APPEND outcome is unknown after the connection was lost; inspect the Drafts folder before retrying"
+            )
+        }
+    }
+}
+
+fn save_draft(
+    factory: &DraftSessionFactory<'_>,
+    session: &mut connection::ImapSession,
+    folder: &str,
+    composed: &draft::ComposedDraft,
+) -> Result<draft::SaveOutcome> {
+    draft::save_composed_draft(
+        session,
+        || {
+            factory
+                .connect()
+                .map(|session| Box::new(session) as Box<dyn draft::DraftMailboxSession>)
+        },
+        folder,
+        composed,
+    )
+}
+
+fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> {
+    let sender = draft_sender(account)?;
+    let to = parse_recipient_flags(&args.to, "To")?;
+    let cc = parse_recipient_flags(&args.cc, "Cc")?;
+    let bcc = parse_recipient_flags(&args.bcc, "Bcc")?;
+    let (credential, body) =
+        read_draft_body_with(account, |name| std::env::var(name).ok(), std::io::stdin())?;
+    let factory = DraftSessionFactory {
+        account,
+        credential,
+    };
+    let mut session = factory.connect()?;
+    let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
+    let composed = draft::compose_new_draft(draft::NewDraftInput {
+        sender,
+        to,
+        cc,
+        bcc,
+        subject: args.subject.clone(),
+        body,
+        format: if args.html {
+            draft::BodyFormat::Html
+        } else {
+            draft::BodyFormat::Plain
+        },
+    })?;
+    let outcome = save_draft(&factory, &mut session, &folder, &composed);
+    let _ = session.logout();
+    report_save_outcome(outcome?, account, &folder, &composed)
+}
+
+fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> {
+    let sender = draft_sender(account)?;
+    let (credential, body) =
+        read_draft_body_with(account, |name| std::env::var(name).ok(), std::io::stdin())?;
+    let factory = DraftSessionFactory {
+        account,
+        credential,
+    };
+    let mut session = factory.connect()?;
+    let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
+    let source_folder = args.folder.as_deref().unwrap_or(&account.default_folder);
+    let source = fetch_reply_source(&mut session, source_folder, args.uid)?;
+    let composed = draft::compose_reply_draft(draft::ReplyDraftInput {
+        sender,
+        source: &source,
+        body,
+        format: if args.html {
+            draft::BodyFormat::Html
+        } else {
+            draft::BodyFormat::Plain
+        },
+        quote_original: !args.no_quote,
+    })?;
+    let outcome = save_draft(&factory, &mut session, &folder, &composed);
+    let _ = session.logout();
+    report_save_outcome(outcome?, account, &folder, &composed)
 }
 
 fn with_account_session<T, F>(account: &config::ResolvedAccount, f: F) -> Result<T>
@@ -1239,6 +1545,8 @@ fn main() -> Result<()> {
     let accounts = cfg.resolve_accounts(selector, &overrides)?;
 
     let result = match &cli.command {
+        Commands::Draft(args) => cmd_draft(&accounts[0], args),
+        Commands::Reply(args) => cmd_reply(&accounts[0], args),
         Commands::Search(args) => cmd_search_accounts(&accounts, args),
         Commands::Read(args) => cmd_read_accounts(&accounts, args),
         Commands::Delete(args) => {
@@ -1307,6 +1615,207 @@ fn main() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn draft_account() -> config::ResolvedAccount {
+        config::ResolvedAccount {
+            name: Some("work".to_string()),
+            host: "imap.example.com".to_string(),
+            port: 993,
+            tls: true,
+            user: "login".to_string(),
+            pass_env: Some("WORK_PASS".to_string()),
+            sender: Some("Me <me@example.com>".to_string()),
+            drafts_folder: None,
+            trash_folder: "Trash".to_string(),
+            default_folder: "INBOX".to_string(),
+        }
+    }
+
+    struct MustNotRead;
+
+    impl Read for MustNotRead {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            panic!("stdin was read before credentials were resolved")
+        }
+    }
+
+    #[test]
+    fn draft_clap_accepts_repeated_single_mailbox_flags() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "draft",
+            "--to",
+            "one@example.com",
+            "--to",
+            "\"Two, Person\" <two@example.com>",
+            "--cc",
+            "cc@example.com",
+            "--bcc",
+            "bcc@example.com",
+            "--subject",
+            "Hello",
+            "--html",
+            "--drafts-folder",
+            "Nested/Drafts",
+        ])
+        .unwrap();
+        let Commands::Draft(args) = cli.command else {
+            panic!("expected draft command")
+        };
+        assert_eq!(args.to.len(), 2);
+        assert_eq!(args.cc, ["cc@example.com"]);
+        assert_eq!(args.bcc, ["bcc@example.com"]);
+        assert!(args.html);
+        assert_eq!(args.drafts_folder.as_deref(), Some("Nested/Drafts"));
+    }
+
+    #[test]
+    fn reply_clap_has_only_the_confirmed_override_surface() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "reply",
+            "42",
+            "--folder",
+            "Archive",
+            "--html",
+            "--no-quote",
+            "--drafts-folder",
+            "Drafts",
+        ])
+        .unwrap();
+        let Commands::Reply(args) = cli.command else {
+            panic!("expected reply command")
+        };
+        assert_eq!(args.uid, 42);
+        assert_eq!(args.folder.as_deref(), Some("Archive"));
+        assert!(args.html);
+        assert!(args.no_quote);
+        assert!(
+            Cli::try_parse_from(["slashmail", "reply", "42", "--subject", "override"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["slashmail", "reply", "42", "--to", "other@example.com"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["slashmail", "reply", "0"]).is_err());
+    }
+
+    #[test]
+    fn draft_and_reply_reject_all_accounts() {
+        for command in [
+            vec![
+                "slashmail",
+                "--all-accounts",
+                "draft",
+                "--to",
+                "to@example.com",
+            ],
+            vec!["slashmail", "--all-accounts", "reply", "42"],
+        ] {
+            let cli = Cli::try_parse_from(command).unwrap();
+            assert!(reject_all_accounts_if_unsupported(&cli).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_or_empty_draft_credential_fails_before_stdin_read() {
+        let account = draft_account();
+        assert!(read_draft_body_with(&account, |_| None, MustNotRead).is_err());
+        assert!(read_draft_body_with(&account, |_| Some(String::new()), MustNotRead).is_err());
+    }
+
+    #[test]
+    fn draft_body_preserves_unicode_and_uses_configured_environment_name() {
+        let account = draft_account();
+        let body = "Héllo 世界\nSecond line";
+        let mut requested = String::new();
+        let (credential, read) = read_draft_body_with(
+            &account,
+            |name| {
+                requested = name.to_string();
+                Some("secret".to_string())
+            },
+            body.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(requested, "WORK_PASS");
+        assert_eq!(credential.expose(), "secret");
+        assert_eq!(read, body);
+    }
+
+    #[test]
+    fn legacy_draft_credential_uses_slashmail_pass() {
+        let mut account = draft_account();
+        account.name = None;
+        account.pass_env = None;
+        account.user = "me@example.com".to_string();
+        let mut requested = String::new();
+        let credential = draft_credential_with(&account, |name| {
+            requested = name.to_string();
+            Some("secret".to_string())
+        })
+        .unwrap();
+        assert_eq!(requested, "SLASHMAIL_PASS");
+        assert_eq!(credential.expose(), "secret");
+    }
+
+    #[test]
+    fn named_draft_account_requires_pass_env() {
+        let mut account = draft_account();
+        account.pass_env = None;
+        assert!(draft_credential_with(&account, |_| Some("secret".to_string())).is_err());
+    }
+
+    #[test]
+    fn sender_adaptation_prefers_config_and_requires_a_typed_fallback() {
+        let account = draft_account();
+        assert_eq!(
+            draft_sender(&account).unwrap().email.to_string(),
+            "me@example.com"
+        );
+
+        let mut fallback = account.clone();
+        fallback.sender = None;
+        fallback.user = "fallback@example.com".to_string();
+        assert_eq!(
+            draft_sender(&fallback).unwrap().email.to_string(),
+            "fallback@example.com"
+        );
+
+        fallback.user = "not-a-mailbox".to_string();
+        assert!(draft_sender(&fallback).is_err());
+    }
+
+    #[test]
+    fn draft_failures_do_not_echo_credentials_body_or_mime() {
+        let account = draft_account();
+        let credential_error = read_draft_body_with(&account, |_| None, "private body".as_bytes())
+            .err()
+            .expect("missing credentials should fail");
+        let rendered = credential_error.to_string();
+        assert!(!rendered.contains("private body"));
+        assert!(!rendered.contains("super-secret-password"));
+
+        let composed = draft::compose_new_draft(draft::NewDraftInput {
+            sender: draft::parse_mailbox("me@example.com", "sender").unwrap(),
+            to: vec![draft::parse_mailbox("you@example.com", "To").unwrap()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Sensitive subject".to_string(),
+            body: "private body".to_string(),
+            format: draft::BodyFormat::Plain,
+        })
+        .unwrap();
+        for outcome in [
+            draft::SaveOutcome::SavedUidUnresolved,
+            draft::SaveOutcome::Unknown,
+        ] {
+            let error = report_save_outcome(outcome, &account, "Drafts", &composed).unwrap_err();
+            let rendered = error.to_string();
+            assert!(!rendered.contains("private body"));
+            assert!(!rendered.contains("Content-Type"));
+            assert!(!rendered.contains("super-secret-password"));
+        }
+    }
 
     #[test]
     fn validate_mark_flags_no_flags() {

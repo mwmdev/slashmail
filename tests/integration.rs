@@ -1,5 +1,7 @@
 #![cfg(feature = "integration-tests")]
 
+use std::io::Write;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -8,6 +10,7 @@ use std::{path::Path, process::Command};
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::client::Tls;
 use lettre::{Message, SmtpTransport, Transport};
+use mailparse::MailHeaderMap;
 
 use slashmail::connection::{self, ImapSession};
 use slashmail::delete;
@@ -70,6 +73,7 @@ fn send_email_with_cc(from: &str, to: &str, cc: &str, subject: &str, body: &str)
         .to(to_addr.parse().unwrap())
         .cc(cc_addr.parse().unwrap())
         .subject(subject)
+        .message_id(None)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
         .unwrap();
@@ -164,6 +168,45 @@ fn assert_cmd_success(output: std::process::Output) -> String {
     String::from_utf8(output.stdout).unwrap()
 }
 
+fn output_with_stdin(mut command: Command, input: &str) -> std::process::Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn create_drafts_folder(user: &str) {
+    let mut session = imap_connect(user);
+    session.create("Drafts").unwrap();
+    session.logout().unwrap();
+}
+
+fn only_message_in(session: &mut ImapSession, folder: &str) -> (u32, Vec<u8>, Vec<String>) {
+    session.select(folder).unwrap();
+    let uids = session.uid_search("ALL").unwrap();
+    assert_eq!(uids.len(), 1, "expected one message in {folder}");
+    let uid = *uids.iter().next().unwrap();
+    let fetches = session
+        .uid_fetch(&uid.to_string(), "(UID FLAGS BODY.PEEK[])")
+        .unwrap();
+    assert_eq!(fetches.len(), 1);
+    let fetch = &fetches[0];
+    (
+        uid,
+        fetch.body().unwrap().to_vec(),
+        fetch.flags().iter().map(ToString::to_string).collect(),
+    )
+}
+
 /// Convert days since Unix epoch to (year, month, day). Simple civil calendar math.
 fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
@@ -185,6 +228,224 @@ fn connect_and_logout() {
     let user = unique_user();
     let mut session = imap_connect(&user);
     session.logout().unwrap();
+}
+
+#[test]
+fn cli_saves_plain_draft_with_headers_flag_and_no_delivery() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let cc = unique_user();
+    let bcc = unique_user();
+    for user in [&recipient, &cc, &bcc] {
+        let mut session = imap_connect(user);
+        session.logout().unwrap();
+    }
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args([
+        "--account",
+        "personal",
+        "draft",
+        "--to",
+        &user_email(&recipient),
+        "--cc",
+        &user_email(&cc),
+        "--bcc",
+        &user_email(&bcc),
+        "--subject",
+        "Stored plain draft",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let output = output_with_stdin(command, "Héllo from stdin\nSecond line");
+    let stdout = assert_cmd_success(output);
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(stdout.contains("Draft saved: Account=personal | Folder=Drafts | UID="));
+    assert!(stdout.contains("Subject=Stored plain draft"));
+
+    let mut owner_session = imap_connect(&owner);
+    let (_uid, raw, flags) = only_message_in(&mut owner_session, "Drafts");
+    assert!(flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    assert_eq!(
+        parsed.headers.get_first_value("From").as_deref(),
+        Some(user_email(&owner).as_str())
+    );
+    assert_eq!(
+        parsed.headers.get_first_value("Subject").as_deref(),
+        Some("Stored plain draft")
+    );
+    assert!(parsed
+        .headers
+        .get_first_value("To")
+        .unwrap()
+        .contains(&user_email(&recipient)));
+    assert!(parsed
+        .headers
+        .get_first_value("Cc")
+        .unwrap()
+        .contains(&user_email(&cc)));
+    assert!(parsed
+        .headers
+        .get_first_value("Bcc")
+        .unwrap()
+        .contains(&user_email(&bcc)));
+    assert_eq!(parsed.ctype.mimetype, "text/plain");
+    assert_eq!(
+        parsed
+            .get_body()
+            .unwrap()
+            .replace("\r\n", "\n")
+            .trim_end()
+            .to_string(),
+        "Héllo from stdin\nSecond line"
+    );
+    assert!(parsed.headers.get_first_value("Message-ID").is_some());
+    owner_session.logout().unwrap();
+
+    for user in [&recipient, &cc, &bcc] {
+        let mut session = imap_connect(user);
+        session.select("INBOX").unwrap();
+        assert!(
+            session.uid_search("ALL").unwrap().is_empty(),
+            "APPEND must not deliver mail to {user}"
+        );
+        session.logout().unwrap();
+    }
+}
+
+#[test]
+fn cli_saves_html_draft_as_html_without_delivery() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.logout().unwrap();
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args([
+        "--account",
+        "personal",
+        "draft",
+        "--to",
+        &user_email(&recipient),
+        "--html",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let output = output_with_stdin(command, "<p>Héllo <strong>HTML</strong></p>");
+    assert_cmd_success(output);
+
+    let mut session = imap_connect(&owner);
+    let (_, raw, flags) = only_message_in(&mut session, "Drafts");
+    assert!(flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    assert_eq!(parsed.ctype.mimetype, "text/html");
+    assert_eq!(
+        parsed.get_body().unwrap().trim_end(),
+        "<p>Héllo <strong>HTML</strong></p>"
+    );
+    session.logout().unwrap();
+
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.select("INBOX").unwrap();
+    assert!(recipient_session.uid_search("ALL").unwrap().is_empty());
+    recipient_session.logout().unwrap();
+}
+
+#[test]
+fn cli_saves_threaded_reply_without_changing_source_state_or_sending() {
+    let owner = unique_user();
+    let sender = unique_user();
+    let cc = unique_user();
+    let sender_email = user_email(&sender);
+    let mut sender_session = imap_connect(&sender);
+    sender_session.logout().unwrap();
+    let mut cc_session = imap_connect(&cc);
+    cc_session.logout().unwrap();
+    send_email_with_cc(&sender_email, &owner, &cc, "Thread topic", "Original body");
+    sleep_for_delivery();
+    create_drafts_folder(&owner);
+
+    let mut owner_session = imap_connect(&owner);
+    let (source_uid, source_raw, source_flags) = only_message_in(&mut owner_session, "INBOX");
+    assert!(!source_flags.iter().any(|flag| {
+        flag.eq_ignore_ascii_case("\\Seen") || flag.eq_ignore_ascii_case("\\Answered")
+    }));
+    let source = mailparse::parse_mail(&source_raw).unwrap();
+    let source_message_id = source.headers.get_first_value("Message-ID").unwrap();
+    owner_session.logout().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args([
+        "--account",
+        "personal",
+        "reply",
+        &source_uid.to_string(),
+        "--folder",
+        "INBOX",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let output = output_with_stdin(command, "My reply");
+    let stdout = assert_cmd_success(output);
+    assert!(stdout.contains("Subject=Re: Thread topic"));
+
+    let mut owner_session = imap_connect(&owner);
+    let (_, reply_raw, reply_flags) = only_message_in(&mut owner_session, "Drafts");
+    assert!(reply_flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let reply = mailparse::parse_mail(&reply_raw).unwrap();
+    assert!(reply
+        .headers
+        .get_first_value("To")
+        .unwrap()
+        .contains(&sender_email));
+    assert!(reply
+        .headers
+        .get_first_value("Cc")
+        .unwrap()
+        .contains(&user_email(&cc)));
+    assert_eq!(
+        reply.headers.get_first_value("In-Reply-To").as_deref(),
+        Some(source_message_id.as_str())
+    );
+    let reply_body = reply.get_body().unwrap();
+    assert!(reply_body.contains("My reply"));
+    assert!(reply_body.contains("> Original body"));
+
+    let (same_uid, _, source_flags_after) = only_message_in(&mut owner_session, "INBOX");
+    assert_eq!(same_uid, source_uid);
+    assert!(!source_flags_after.iter().any(|flag| {
+        flag.eq_ignore_ascii_case("\\Seen") || flag.eq_ignore_ascii_case("\\Answered")
+    }));
+    owner_session.logout().unwrap();
+
+    let mut sender_session = imap_connect(&sender);
+    sender_session.select("INBOX").unwrap();
+    assert!(
+        sender_session.uid_search("ALL").unwrap().is_empty(),
+        "saving a reply draft must not deliver it"
+    );
+    sender_session.logout().unwrap();
 }
 
 #[test]
