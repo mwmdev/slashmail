@@ -176,44 +176,73 @@ fn print_message(raw: &[u8]) {
 }
 
 fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
-    let mut text_plain = None;
-    let mut text_html = None;
     let mut attachments = Vec::new();
+    collect_attachments(parsed, &mut attachments);
 
-    collect_parts(parsed, &mut text_plain, &mut text_html, &mut attachments);
-
-    let body = if let Some(text) = text_plain {
-        text
-    } else if let Some(html) = text_html {
-        match html2text::from_read(html.as_bytes(), 80) {
-            Ok(converted) => converted,
-            Err(e) => {
-                eprintln!("Warning: failed to convert HTML to text: {e}");
-                html
-            }
+    let body = match decoded_text_body(parsed) {
+        Ok(Some(body)) => body,
+        Ok(None) => String::new(),
+        Err(error) => {
+            eprintln!("Warning: failed to decode message body: {error:#}");
+            String::new()
         }
-    } else {
-        String::new()
     };
 
     (body, attachments)
 }
 
-fn collect_parts(
+/// Return the first usable, decoded, non-attachment text body.
+///
+/// Plain text is preferred across the full MIME tree. When only HTML is
+/// available it is converted to text. Decode and conversion failures are
+/// returned to the caller so stateful draft orchestration can fail before
+/// mutating a mailbox.
+pub fn decoded_text_body(parsed: &mailparse::ParsedMail) -> Result<Option<String>> {
+    let mut text_plain = None;
+    let mut text_html = None;
+    collect_text_parts(parsed, &mut text_plain, &mut text_html)?;
+
+    if let Some(text) = text_plain {
+        return Ok(Some(text));
+    }
+
+    match text_html {
+        Some(html) => html2text::from_read(html.as_bytes(), 80)
+            .context("Failed to convert HTML body to text")
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+fn collect_text_parts(
     part: &mailparse::ParsedMail,
     text_plain: &mut Option<String>,
     text_html: &mut Option<String>,
-    attachments: &mut Vec<String>,
-) {
+) -> Result<()> {
     let mime = part.ctype.mimetype.to_lowercase();
 
-    // Check if this part is an attachment
-    let disposition_raw = part
-        .headers
-        .iter()
-        .find(|h| h.get_key().eq_ignore_ascii_case("Content-Disposition"))
-        .map(|h| h.get_value())
-        .unwrap_or_default();
+    if is_attachment(part) {
+        return Ok(());
+    }
+
+    if mime.starts_with("multipart/") {
+        for sub in &part.subparts {
+            collect_text_parts(sub, text_plain, text_html)?;
+        }
+    } else if mime == "text/plain" && text_plain.is_none() {
+        *text_plain = Some(
+            part.get_body()
+                .context("Failed to decode text/plain body")?,
+        );
+    } else if mime == "text/html" && text_html.is_none() {
+        *text_html = Some(part.get_body().context("Failed to decode text/html body")?);
+    }
+
+    Ok(())
+}
+
+fn collect_attachments(part: &mailparse::ParsedMail, attachments: &mut Vec<String>) {
+    let disposition_raw = content_disposition(part);
 
     if disposition_raw.to_lowercase().starts_with("attachment") {
         if let Some(name) = part.ctype.params.get("name") {
@@ -225,31 +254,23 @@ fn collect_parts(
         return;
     }
 
-    if mime.starts_with("multipart/") {
-        for sub in &part.subparts {
-            collect_parts(sub, text_plain, text_html, attachments);
-        }
-    } else if mime == "text/plain" && text_plain.is_none() {
-        match part.get_body() {
-            Ok(body) => *text_plain = Some(body),
-            Err(e) => {
-                eprintln!("Warning: failed to decode text/plain: {e}");
-                if let Ok(raw) = part.get_body_raw() {
-                    *text_plain = Some(String::from_utf8_lossy(&raw).into_owned());
-                }
-            }
-        }
-    } else if mime == "text/html" && text_html.is_none() {
-        match part.get_body() {
-            Ok(body) => *text_html = Some(body),
-            Err(e) => {
-                eprintln!("Warning: failed to decode text/html: {e}");
-                if let Ok(raw) = part.get_body_raw() {
-                    *text_html = Some(String::from_utf8_lossy(&raw).into_owned());
-                }
-            }
-        }
+    for sub in &part.subparts {
+        collect_attachments(sub, attachments);
     }
+}
+
+fn is_attachment(part: &mailparse::ParsedMail) -> bool {
+    content_disposition(part)
+        .to_ascii_lowercase()
+        .starts_with("attachment")
+}
+
+fn content_disposition(part: &mailparse::ParsedMail) -> String {
+    part.headers
+        .iter()
+        .find(|header| header.get_key().eq_ignore_ascii_case("Content-Disposition"))
+        .map(|header| header.get_value())
+        .unwrap_or_default()
 }
 
 fn extract_disposition_filename(disposition: &str) -> Option<String> {
@@ -337,6 +358,65 @@ mod tests {
         let parsed = mailparse::parse_mail(raw).unwrap();
         let (text, _) = extract_body(&parsed);
         assert!(text.trim() == "Plain text");
+    }
+
+    #[test]
+    fn decoded_text_body_prefers_nested_encoded_plain_and_skips_attachments() {
+        let raw = b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n\
+--outer\r\n\
+Content-Type: text/plain; name=attached.txt\r\n\
+Content-Disposition: attachment; filename=attached.txt\r\n\r\n\
+Do not quote this\r\n\
+--outer\r\n\
+Content-Type: multipart/alternative; boundary=inner\r\n\r\n\
+--inner\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+Content-Transfer-Encoding: quoted-printable\r\n\r\n\
+<p>HTML=20fallback</p>\r\n\
+--inner\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n\
+UGxhaW4gw6lsw6l2w6k=\r\n\
+--inner--\r\n\
+--outer--";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        assert_eq!(
+            decoded_text_body(&parsed).unwrap().unwrap().trim(),
+            "Plain élévé"
+        );
+    }
+
+    #[test]
+    fn decoded_text_body_converts_html_without_returning_markup() {
+        let raw = b"Content-Type: text/html; charset=utf-8\r\n\r\n\
+<p>Hello <strong>world</strong></p>";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let text = decoded_text_body(&parsed).unwrap().unwrap();
+
+        assert!(text.contains("Hello"));
+        assert!(text.contains("world"));
+        assert!(!text.contains("<strong>"));
+    }
+
+    #[test]
+    fn decoded_text_body_returns_none_for_attachment_only_message() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Disposition: attachment; filename=note.txt\r\n\r\n\
+Attached text";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        assert_eq!(decoded_text_body(&parsed).unwrap(), None);
+    }
+
+    #[test]
+    fn decoded_text_body_returns_transfer_decode_errors() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n\
+%%%invalid%%%";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        assert!(decoded_text_body(&parsed).is_err());
     }
 
     #[test]
