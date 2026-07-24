@@ -216,10 +216,7 @@ impl DraftMailboxSession for ImapSession {
 
     fn fetch_message_id_header(&mut self, uid: u32) -> Result<Vec<HeaderFetch>> {
         let fetches = self
-            .uid_fetch(
-                &uid.to_string(),
-                "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]",
-            )
+            .uid_fetch(&uid.to_string(), "BODY.PEEK[HEADER.FIELDS (MESSAGE-ID)]")
             .map_err(|_| anyhow::anyhow!("Failed to verify a saved draft identity"))?;
         Ok(fetches
             .iter()
