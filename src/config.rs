@@ -10,6 +10,8 @@ pub struct Config {
     pub port: Option<u16>,
     pub tls: Option<bool>,
     pub user: Option<String>,
+    pub sender: Option<String>,
+    pub drafts_folder: Option<String>,
     pub trash_folder: Option<String>,
     pub default_folder: Option<String>,
     pub default_account: Option<String>,
@@ -26,6 +28,8 @@ pub struct AccountConfig {
     pub tls: Option<bool>,
     pub user: Option<String>,
     pub pass_env: Option<String>,
+    pub sender: Option<String>,
+    pub drafts_folder: Option<String>,
     pub trash_folder: Option<String>,
     pub default_folder: Option<String>,
 }
@@ -38,6 +42,8 @@ pub struct ResolvedAccount {
     pub tls: bool,
     pub user: String,
     pub pass_env: Option<String>,
+    pub sender: Option<String>,
+    pub drafts_folder: Option<String>,
     pub trash_folder: String,
     pub default_folder: String,
 }
@@ -223,6 +229,11 @@ impl Config {
             tls,
             user,
             pass_env: account.pass_env.clone(),
+            sender: account.sender.clone().or_else(|| self.sender.clone()),
+            drafts_folder: account
+                .drafts_folder
+                .clone()
+                .or_else(|| self.drafts_folder.clone()),
             trash_folder: account
                 .trash_folder
                 .clone()
@@ -262,6 +273,8 @@ impl Config {
             tls,
             user,
             pass_env: None,
+            sender: self.sender.clone(),
+            drafts_folder: self.drafts_folder.clone(),
             trash_folder: self
                 .trash_folder
                 .clone()
@@ -290,6 +303,8 @@ mod tests {
             port = 993
             tls = true
             user = "alice@example.com"
+            sender = "Alice Example <alice@example.com>"
+            drafts_folder = "[Gmail]/Drafts"
             trash_folder = "[Gmail]/Trash"
             default_folder = "INBOX"
         "#;
@@ -298,6 +313,11 @@ mod tests {
         assert_eq!(config.port, Some(993));
         assert_eq!(config.tls, Some(true));
         assert_eq!(config.user.as_deref(), Some("alice@example.com"));
+        assert_eq!(
+            config.sender.as_deref(),
+            Some("Alice Example <alice@example.com>")
+        );
+        assert_eq!(config.drafts_folder.as_deref(), Some("[Gmail]/Drafts"));
         assert_eq!(config.trash_folder.as_deref(), Some("[Gmail]/Trash"));
         assert_eq!(config.default_folder.as_deref(), Some("INBOX"));
         assert!(config.accounts.is_empty());
@@ -314,6 +334,8 @@ mod tests {
         assert_eq!(config.port, None);
         assert_eq!(config.tls, Some(true));
         assert_eq!(config.user, None);
+        assert_eq!(config.sender, None);
+        assert_eq!(config.drafts_folder, None);
     }
 
     #[test]
@@ -323,6 +345,8 @@ mod tests {
         assert!(config.port.is_none());
         assert!(config.tls.is_none());
         assert!(config.user.is_none());
+        assert!(config.sender.is_none());
+        assert!(config.drafts_folder.is_none());
         assert!(config.accounts.is_empty());
     }
 
@@ -398,6 +422,86 @@ mod tests {
     }
 
     #[test]
+    fn resolve_named_accounts_prefers_account_draft_values_then_top_level() {
+        let toml = r#"
+            sender = "Top Level <top@example.com>"
+            drafts_folder = "Top Drafts"
+
+            [[accounts]]
+            name = "overridden"
+            host = "imap.example.com"
+            user = "opaque-login"
+            sender = "Account Sender <account@example.com>"
+            drafts_folder = "Account Drafts"
+
+            [[accounts]]
+            name = "inherited"
+            host = "imap.example.com"
+            user = "another-opaque-login"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let accounts = config
+            .resolve_accounts(AccountSelector::All, &ConnectionOverrides::default())
+            .unwrap();
+
+        assert_eq!(
+            accounts[0].sender.as_deref(),
+            Some("Account Sender <account@example.com>")
+        );
+        assert_eq!(accounts[0].drafts_folder.as_deref(), Some("Account Drafts"));
+        assert_eq!(
+            accounts[1].sender.as_deref(),
+            Some("Top Level <top@example.com>")
+        );
+        assert_eq!(accounts[1].drafts_folder.as_deref(), Some("Top Drafts"));
+    }
+
+    #[test]
+    fn resolve_legacy_account_carries_optional_draft_values_for_non_email_login() {
+        let toml = r#"
+            user = "opaque-login"
+            sender = "Alice Example <alice@example.com>"
+            drafts_folder = "Saved Drafts"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let account = config
+            .resolve_accounts(AccountSelector::Default, &ConnectionOverrides::default())
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        assert_eq!(account.user, "opaque-login");
+        assert_eq!(
+            account.sender.as_deref(),
+            Some("Alice Example <alice@example.com>")
+        );
+        assert_eq!(account.drafts_folder.as_deref(), Some("Saved Drafts"));
+    }
+
+    #[test]
+    fn resolve_accounts_without_draft_values_remains_valid() {
+        let toml = r#"
+            [[accounts]]
+            name = "legacy"
+            host = "imap.example.com"
+            user = "opaque-login"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let account = config
+            .resolve_accounts(
+                AccountSelector::Named("legacy"),
+                &ConnectionOverrides::default(),
+            )
+            .unwrap()
+            .pop()
+            .unwrap();
+
+        assert_eq!(account.user, "opaque-login");
+        assert_eq!(account.sender, None);
+        assert_eq!(account.drafts_folder, None);
+    }
+
+    #[test]
     fn resolve_all_accounts() {
         let toml = r#"
             [[accounts]]
@@ -441,6 +545,8 @@ mod tests {
                 tls: true,
                 user: "me@test".into(),
                 pass_env: None,
+                sender: None,
+                drafts_folder: None,
                 trash_folder: "Trash".into(),
                 default_folder: "INBOX".into(),
             }
@@ -509,5 +615,22 @@ mod tests {
         let config: Config = toml::from_str(toml).unwrap();
         let result = config.resolve_accounts(AccountSelector::All, &ConnectionOverrides::default());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn unknown_draft_configuration_field_is_rejected() {
+        let top_level = toml::from_str::<Config>("draft_folder = \"Drafts\"");
+        assert!(top_level.is_err());
+
+        let account = toml::from_str::<Config>(
+            r#"
+                [[accounts]]
+                name = "personal"
+                host = "imap.example.com"
+                user = "alice@example.com"
+                draft_folder = "Drafts"
+            "#,
+        );
+        assert!(account.is_err());
     }
 }
