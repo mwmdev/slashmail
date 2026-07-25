@@ -1,8 +1,12 @@
 use anyhow::{Context, Result};
+use std::collections::HashMap;
 
 use crate::connection::ImapSession;
 use crate::display::MessageRow;
 use crate::search;
+
+pub type MessageBodyMap = HashMap<(Option<String>, String, u32), Vec<u8>>;
+pub type DefaultFolderMap = HashMap<Option<String>, String>;
 
 /// Display the full content of messages in the terminal.
 pub fn read_messages(
@@ -10,8 +14,37 @@ pub fn read_messages(
     messages: &[MessageRow],
     default_folder: &str,
 ) -> Result<()> {
-    let mut by_folder: std::collections::HashMap<String, Vec<u32>> =
-        std::collections::HashMap::new();
+    let fetched = fetch_message_bodies(session, messages, default_folder)?;
+
+    let mut defaults = DefaultFolderMap::new();
+    defaults.insert(None, default_folder.to_string());
+    for msg in messages {
+        if let Some(account) = &msg.account {
+            defaults.insert(Some(account.clone()), default_folder.to_string());
+        }
+    }
+
+    let mut bodies = MessageBodyMap::new();
+    for msg in messages {
+        let folder = msg
+            .folder
+            .clone()
+            .unwrap_or_else(|| default_folder.to_string());
+        if let Some(body) = fetched.get(&(folder.clone(), msg.uid)) {
+            bodies.insert((msg.account.clone(), folder, msg.uid), body.clone());
+        }
+    }
+
+    print_messages_with_bodies(messages, &defaults, &bodies);
+    Ok(())
+}
+
+pub fn fetch_message_bodies(
+    session: &mut ImapSession,
+    messages: &[MessageRow],
+    default_folder: &str,
+) -> Result<HashMap<(String, u32), Vec<u8>>> {
+    let mut by_folder: HashMap<String, Vec<u32>> = HashMap::new();
     for msg in messages {
         let folder = msg
             .folder
@@ -20,9 +53,7 @@ pub fn read_messages(
         by_folder.entry(folder).or_default().push(msg.uid);
     }
 
-    // Build a UID→folder map so we can print in the original (sorted) order
-    let mut uid_bodies: std::collections::HashMap<(String, u32), Vec<u8>> =
-        std::collections::HashMap::new();
+    let mut uid_bodies: HashMap<(String, u32), Vec<u8>> = HashMap::new();
 
     for (folder, uids) in &by_folder {
         session
@@ -46,27 +77,47 @@ pub fn read_messages(
         }
     }
 
+    Ok(uid_bodies)
+}
+
+pub fn print_messages_with_bodies(
+    messages: &[MessageRow],
+    default_folders: &DefaultFolderMap,
+    bodies: &MessageBodyMap,
+) {
     // Print in the original message order (newest first, as returned by search)
     let total = messages.len();
     for (i, msg) in messages.iter().enumerate() {
-        let folder = msg
-            .folder
-            .clone()
-            .unwrap_or_else(|| default_folder.to_string());
-        let key = (folder, msg.uid);
+        let key = message_key(msg, default_folders);
 
-        if let Some(raw) = uid_bodies.get(&key) {
+        if let Some(raw) = bodies.get(&key) {
             print_message(raw);
         } else {
-            eprintln!("Warning: could not fetch body for UID {}", msg.uid);
+            let account = msg
+                .account
+                .as_deref()
+                .map(|name| format!(" in account '{name}'"))
+                .unwrap_or_default();
+            eprintln!("Warning: could not fetch body for UID {}{account}", msg.uid);
         }
 
         if i + 1 < total {
             println!("\n{}\n", "─".repeat(60));
         }
     }
+}
 
-    Ok(())
+pub fn message_key(
+    msg: &MessageRow,
+    default_folders: &DefaultFolderMap,
+) -> (Option<String>, String, u32) {
+    let folder = msg.folder.clone().unwrap_or_else(|| {
+        default_folders
+            .get(&msg.account)
+            .cloned()
+            .unwrap_or_else(|| "INBOX".to_string())
+    });
+    (msg.account.clone(), folder, msg.uid)
 }
 
 fn print_message(raw: &[u8]) {
@@ -125,44 +176,126 @@ fn print_message(raw: &[u8]) {
 }
 
 fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
-    let mut text_plain = None;
-    let mut text_html = None;
     let mut attachments = Vec::new();
+    collect_attachments(parsed, &mut attachments);
 
-    collect_parts(parsed, &mut text_plain, &mut text_html, &mut attachments);
-
-    let body = if let Some(text) = text_plain {
-        text
-    } else if let Some(html) = text_html {
-        match html2text::from_read(html.as_bytes(), 80) {
-            Ok(converted) => converted,
-            Err(e) => {
-                eprintln!("Warning: failed to convert HTML to text: {e}");
-                html
-            }
-        }
-    } else {
-        String::new()
-    };
-
-    (body, attachments)
+    (display_text_body(parsed), attachments)
 }
 
-fn collect_parts(
+fn display_text_body(parsed: &mailparse::ParsedMail) -> String {
+    let mut text_plain = None;
+    let mut text_html = None;
+    collect_display_text_parts(parsed, &mut text_plain, &mut text_html);
+
+    if let Some(text) = text_plain {
+        return text;
+    }
+
+    match text_html {
+        Some(html) => match html2text::from_read(html.as_bytes(), 80) {
+            Ok(converted) => converted,
+            Err(error) => {
+                eprintln!("Warning: failed to convert HTML body to text: {error}");
+                html
+            }
+        },
+        None => String::new(),
+    }
+}
+
+fn collect_display_text_parts(
     part: &mailparse::ParsedMail,
     text_plain: &mut Option<String>,
     text_html: &mut Option<String>,
-    attachments: &mut Vec<String>,
 ) {
     let mime = part.ctype.mimetype.to_lowercase();
 
-    // Check if this part is an attachment
-    let disposition_raw = part
-        .headers
-        .iter()
-        .find(|h| h.get_key().eq_ignore_ascii_case("Content-Disposition"))
-        .map(|h| h.get_value())
-        .unwrap_or_default();
+    if is_attachment(part) {
+        return;
+    }
+
+    if mime.starts_with("multipart/") {
+        for sub in &part.subparts {
+            collect_display_text_parts(sub, text_plain, text_html);
+        }
+    } else if mime == "text/plain" && text_plain.is_none() {
+        *text_plain = Some(display_part_text(part, "text/plain"));
+    } else if mime == "text/html" && text_html.is_none() {
+        *text_html = Some(display_part_text(part, "text/html"));
+    }
+}
+
+fn display_part_text(part: &mailparse::ParsedMail, mime: &str) -> String {
+    part.get_body().unwrap_or_else(|error| {
+        eprintln!("Warning: failed to decode {mime} body: {error}");
+        raw_part_text(part)
+    })
+}
+
+fn raw_part_text(part: &mailparse::ParsedMail) -> String {
+    use mailparse::body::Body;
+
+    let body = part.get_body_encoded();
+    let raw = match &body {
+        Body::Base64(body) | Body::QuotedPrintable(body) => body.get_raw(),
+        Body::SevenBit(body) | Body::EightBit(body) => body.get_raw(),
+        Body::Binary(body) => body.get_raw(),
+    };
+    String::from_utf8_lossy(raw).into_owned()
+}
+
+/// Return the first usable, decoded, non-attachment text body.
+///
+/// Plain text is preferred across the full MIME tree. When only HTML is
+/// available it is converted to text. Decode and conversion failures are
+/// returned to the caller so stateful draft orchestration can fail before
+/// mutating a mailbox.
+pub(crate) fn decoded_text_body(parsed: &mailparse::ParsedMail) -> Result<Option<String>> {
+    let mut text_plain = None;
+    let mut text_html = None;
+    collect_text_parts(parsed, &mut text_plain, &mut text_html)?;
+
+    if let Some(text) = text_plain {
+        return Ok(Some(text));
+    }
+
+    match text_html {
+        Some(html) => html2text::from_read(html.as_bytes(), 80)
+            .context("Failed to convert HTML body to text")
+            .map(Some),
+        None => Ok(None),
+    }
+}
+
+fn collect_text_parts(
+    part: &mailparse::ParsedMail,
+    text_plain: &mut Option<String>,
+    text_html: &mut Option<String>,
+) -> Result<()> {
+    let mime = part.ctype.mimetype.to_lowercase();
+
+    if is_attachment(part) {
+        return Ok(());
+    }
+
+    if mime.starts_with("multipart/") {
+        for sub in &part.subparts {
+            collect_text_parts(sub, text_plain, text_html)?;
+        }
+    } else if mime == "text/plain" && text_plain.is_none() {
+        *text_plain = Some(
+            part.get_body()
+                .context("Failed to decode text/plain body")?,
+        );
+    } else if mime == "text/html" && text_html.is_none() {
+        *text_html = Some(part.get_body().context("Failed to decode text/html body")?);
+    }
+
+    Ok(())
+}
+
+fn collect_attachments(part: &mailparse::ParsedMail, attachments: &mut Vec<String>) {
+    let disposition_raw = content_disposition(part);
 
     if disposition_raw.to_lowercase().starts_with("attachment") {
         if let Some(name) = part.ctype.params.get("name") {
@@ -174,31 +307,23 @@ fn collect_parts(
         return;
     }
 
-    if mime.starts_with("multipart/") {
-        for sub in &part.subparts {
-            collect_parts(sub, text_plain, text_html, attachments);
-        }
-    } else if mime == "text/plain" && text_plain.is_none() {
-        match part.get_body() {
-            Ok(body) => *text_plain = Some(body),
-            Err(e) => {
-                eprintln!("Warning: failed to decode text/plain: {e}");
-                if let Ok(raw) = part.get_body_raw() {
-                    *text_plain = Some(String::from_utf8_lossy(&raw).into_owned());
-                }
-            }
-        }
-    } else if mime == "text/html" && text_html.is_none() {
-        match part.get_body() {
-            Ok(body) => *text_html = Some(body),
-            Err(e) => {
-                eprintln!("Warning: failed to decode text/html: {e}");
-                if let Ok(raw) = part.get_body_raw() {
-                    *text_html = Some(String::from_utf8_lossy(&raw).into_owned());
-                }
-            }
-        }
+    for sub in &part.subparts {
+        collect_attachments(sub, attachments);
     }
+}
+
+fn is_attachment(part: &mailparse::ParsedMail) -> bool {
+    content_disposition(part)
+        .to_ascii_lowercase()
+        .starts_with("attachment")
+}
+
+fn content_disposition(part: &mailparse::ParsedMail) -> String {
+    part.headers
+        .iter()
+        .find(|header| header.get_key().eq_ignore_ascii_case("Content-Disposition"))
+        .map(|header| header.get_value())
+        .unwrap_or_default()
 }
 
 fn extract_disposition_filename(disposition: &str) -> Option<String> {
@@ -227,6 +352,48 @@ mod tests {
     }
 
     #[test]
+    fn message_key_uses_account_fallback_folder() {
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "Sent".to_string());
+        let msg = MessageRow {
+            account: Some("work".to_string()),
+            uid: 42,
+            folder: None,
+            from: String::new(),
+            subject: String::new(),
+            date: String::new(),
+            timestamp: 0,
+            size: 0,
+        };
+
+        assert_eq!(
+            message_key(&msg, &defaults),
+            (Some("work".to_string()), "Sent".to_string(), 42)
+        );
+    }
+
+    #[test]
+    fn message_key_prefers_explicit_folder() {
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "Sent".to_string());
+        let msg = MessageRow {
+            account: Some("work".to_string()),
+            uid: 42,
+            folder: Some("Archive".to_string()),
+            from: String::new(),
+            subject: String::new(),
+            date: String::new(),
+            timestamp: 0,
+            size: 0,
+        };
+
+        assert_eq!(
+            message_key(&msg, &defaults),
+            (Some("work".to_string()), "Archive".to_string(), 42)
+        );
+    }
+
+    #[test]
     fn extract_body_html_only() {
         let raw = b"Content-Type: text/html\r\n\r\n<p>Hello world</p>";
         let parsed = mailparse::parse_mail(raw).unwrap();
@@ -244,6 +411,78 @@ mod tests {
         let parsed = mailparse::parse_mail(raw).unwrap();
         let (text, _) = extract_body(&parsed);
         assert!(text.trim() == "Plain text");
+    }
+
+    #[test]
+    fn decoded_text_body_prefers_nested_encoded_plain_and_skips_attachments() {
+        let raw = b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n\
+--outer\r\n\
+Content-Type: text/plain; name=attached.txt\r\n\
+Content-Disposition: attachment; filename=attached.txt\r\n\r\n\
+Do not quote this\r\n\
+--outer\r\n\
+Content-Type: multipart/alternative; boundary=inner\r\n\r\n\
+--inner\r\n\
+Content-Type: text/html; charset=utf-8\r\n\
+Content-Transfer-Encoding: quoted-printable\r\n\r\n\
+<p>HTML=20fallback</p>\r\n\
+--inner\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n\
+UGxhaW4gw6lsw6l2w6k=\r\n\
+--inner--\r\n\
+--outer--";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        assert_eq!(
+            decoded_text_body(&parsed).unwrap().unwrap().trim(),
+            "Plain élévé"
+        );
+    }
+
+    #[test]
+    fn decoded_text_body_converts_html_without_returning_markup() {
+        let raw = b"Content-Type: text/html; charset=utf-8\r\n\r\n\
+<p>Hello <strong>world</strong></p>";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let text = decoded_text_body(&parsed).unwrap().unwrap();
+
+        assert!(text.contains("Hello"));
+        assert!(text.contains("world"));
+        assert!(!text.contains("<strong>"));
+    }
+
+    #[test]
+    fn decoded_text_body_returns_none_for_attachment_only_message() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Disposition: attachment; filename=note.txt\r\n\r\n\
+Attached text";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        assert_eq!(decoded_text_body(&parsed).unwrap(), None);
+    }
+
+    #[test]
+    fn decoded_text_body_returns_transfer_decode_errors() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n\
+%%%invalid%%%";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        assert!(decoded_text_body(&parsed).is_err());
+    }
+
+    #[test]
+    fn extract_body_falls_back_to_raw_malformed_base64() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Transfer-Encoding: base64\r\n\r\n\
+%%%invalid%%%";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        let (text, attachments) = extract_body(&parsed);
+
+        assert_eq!(text, "%%%invalid%%%");
+        assert!(attachments.is_empty());
     }
 
     #[test]

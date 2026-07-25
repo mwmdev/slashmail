@@ -1,10 +1,12 @@
-use slashmail::{config, connection, delete, display, export, read, search};
+use slashmail::{config, connection, delete, display, draft, export, read, search};
 
 use anyhow::{bail, Context, Result};
-use clap::{CommandFactory, Parser, Subcommand};
+use clap::parser::ValueSource;
+use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Color, Table};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -63,6 +65,14 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
+    /// Named account from config to use
+    #[arg(long, global = true, conflicts_with = "all_accounts")]
+    account: Option<String>,
+
+    /// Query all configured accounts (read-only commands only)
+    #[arg(long, global = true, conflicts_with = "account")]
+    all_accounts: bool,
+
     /// IMAP password (or SLASHMAIL_PASS env; prompts if missing)
     #[arg(skip)]
     _pass_placeholder: (),
@@ -73,6 +83,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
+    /// Save a new unsent email draft
+    Draft(DraftArgs),
+    /// Save an unsent reply draft for one message UID
+    Reply(ReplyArgs),
     /// Search messages by criteria
     Search(SearchArgs),
     /// Display the content of matching messages
@@ -100,6 +114,56 @@ enum Commands {
     /// Generate man page
     #[command(hide = true)]
     Manpage,
+}
+
+#[derive(Parser)]
+struct DraftArgs {
+    /// Recipient mailbox (repeat once per recipient)
+    #[arg(long, required = true)]
+    to: Vec<String>,
+
+    /// Cc mailbox (repeat once per recipient)
+    #[arg(long)]
+    cc: Vec<String>,
+
+    /// Bcc mailbox (repeat once per recipient)
+    #[arg(long)]
+    bcc: Vec<String>,
+
+    /// Draft subject
+    #[arg(long, default_value = "")]
+    subject: String,
+
+    /// Treat stdin as an HTML body instead of plain text
+    #[arg(long)]
+    html: bool,
+
+    /// Destination Drafts mailbox
+    #[arg(long)]
+    drafts_folder: Option<String>,
+}
+
+#[derive(Parser)]
+struct ReplyArgs {
+    /// UID of the source message
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+    uid: u32,
+
+    /// Folder containing the source message
+    #[arg(short, long)]
+    folder: Option<String>,
+
+    /// Treat stdin as an HTML body instead of plain text
+    #[arg(long)]
+    html: bool,
+
+    /// Omit the quoted original message
+    #[arg(long)]
+    no_quote: bool,
+
+    /// Destination Drafts mailbox
+    #[arg(long)]
+    drafts_folder: Option<String>,
 }
 
 #[derive(Parser)]
@@ -340,71 +404,462 @@ impl FilterArgs {
     }
 }
 
-fn get_password() -> Result<String> {
-    if let Ok(p) = std::env::var("SLASHMAIL_PASS") {
-        if !p.is_empty() {
-            return Ok(p);
+fn get_password_for_account(account: &config::ResolvedAccount) -> Result<String> {
+    if let Some(env_name) = &account.pass_env {
+        if let Ok(p) = std::env::var(env_name) {
+            if !p.is_empty() {
+                return Ok(p);
+            }
+        }
+    } else if account.name.is_none() {
+        if let Ok(p) = std::env::var("SLASHMAIL_PASS") {
+            if !p.is_empty() {
+                return Ok(p);
+            }
         }
     }
-    inquire::Password::new("IMAP password:")
+
+    let prompt = account
+        .name
+        .as_ref()
+        .map(|name| format!("IMAP password for {name}:"))
+        .unwrap_or_else(|| "IMAP password:".to_string());
+    inquire::Password::new(&prompt)
         .without_confirmation()
         .prompt()
         .context("Password prompt failed")
 }
 
-fn cmd_quota(session: &mut connection::ImapSession) -> Result<()> {
-    if !session.has_capability("QUOTA") {
-        bail!("Server does not support QUOTA extension (RFC 2087)");
+struct DraftCredential(String);
+
+impl DraftCredential {
+    fn expose(&self) -> &str {
+        &self.0
+    }
+}
+
+impl Drop for DraftCredential {
+    fn drop(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+fn draft_credential_with<F>(
+    account: &config::ResolvedAccount,
+    mut environment: F,
+) -> Result<DraftCredential>
+where
+    F: FnMut(&str) -> Option<String>,
+{
+    let variable = match account.pass_env.as_deref() {
+        Some(variable) => variable,
+        None if account.name.is_none() => "SLASHMAIL_PASS",
+        None => {
+            bail!(
+                "Account '{}' must configure pass_env for draft and reply commands",
+                account.label()
+            )
+        }
+    };
+    let password = environment(variable)
+        .filter(|password| !password.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Required password environment variable '{variable}' is missing or empty"
+            )
+        })?;
+    Ok(DraftCredential(password))
+}
+
+fn read_draft_body_with<R, F>(
+    account: &config::ResolvedAccount,
+    environment: F,
+    mut reader: R,
+) -> Result<(DraftCredential, String)>
+where
+    R: Read,
+    F: FnMut(&str) -> Option<String>,
+{
+    ensure_secure_draft_transport(account)?;
+    let credential = draft_credential_with(account, environment)?;
+    let mut body = String::new();
+    reader
+        .read_to_string(&mut body)
+        .context("Failed to read the draft body from stdin")?;
+    Ok((credential, body))
+}
+
+fn ensure_secure_draft_transport(account: &config::ResolvedAccount) -> Result<()> {
+    if account.tls || connection::is_loopback_host(&account.host) {
+        return Ok(());
     }
 
-    let sp = spinner("Fetching quota...");
+    bail!("Draft and reply commands require TLS for non-loopback IMAP servers")
+}
+
+struct DraftSessionFactory<'a> {
+    account: &'a config::ResolvedAccount,
+    credential: DraftCredential,
+}
+
+impl DraftSessionFactory<'_> {
+    fn connect(&self) -> Result<connection::ImapSession> {
+        connection::connect(
+            &self.account.host,
+            self.account.port,
+            self.account.tls,
+            &self.account.user,
+            self.credential.expose(),
+        )
+        .map_err(|_| anyhow::anyhow!("Failed to connect or authenticate the draft account"))
+    }
+}
+
+fn draft_sender(account: &config::ResolvedAccount) -> Result<lettre::message::Mailbox> {
+    let value = account.sender.as_deref().unwrap_or(&account.user);
+    draft::parse_mailbox(value, "sender").map_err(|_| {
+        if account.sender.is_some() {
+            anyhow::anyhow!("The configured sender is not a valid mailbox")
+        } else {
+            anyhow::anyhow!(
+                "The IMAP username is not a sender mailbox; configure sender for this account"
+            )
+        }
+    })
+}
+
+fn parse_recipient_flags(values: &[String], field: &str) -> Result<Vec<lettre::message::Mailbox>> {
+    values
+        .iter()
+        .map(|value| draft::parse_mailbox(value, field))
+        .collect()
+}
+
+fn resolve_drafts_folder(
+    session: &mut connection::ImapSession,
+    account: &config::ResolvedAccount,
+    command_override: Option<&str>,
+) -> Result<String> {
+    let mailboxes = draft::DraftMailboxSession::list_mailboxes(session)?;
+    draft::resolve_destination(
+        command_override,
+        account.drafts_folder.as_deref(),
+        &mailboxes,
+    )
+}
+
+fn fetch_reply_source(
+    session: &mut connection::ImapSession,
+    folder: &str,
+    uid: u32,
+) -> Result<Vec<u8>> {
+    session
+        .examine(folder)
+        .map_err(|_| anyhow::anyhow!("Failed to examine the reply source folder"))?;
+    let fetches = session
+        .uid_fetch(&uid.to_string(), "BODY.PEEK[]")
+        .map_err(|_| anyhow::anyhow!("Failed to fetch the reply source message"))?;
+    let messages = fetches
+        .iter()
+        .map(|fetch| draft::MessageFetch {
+            uid: fetch.uid,
+            body: fetch.body().map(<[u8]>::to_vec),
+        })
+        .collect();
+    draft::require_exact_source(messages, uid)
+}
+
+fn draft_receipt(
+    account: &config::ResolvedAccount,
+    folder: &str,
+    uid: u32,
+    composed: &draft::ComposedDraft,
+) -> draft::DraftReceipt {
+    draft::DraftReceipt {
+        account: account.label().to_string(),
+        folder: folder.to_string(),
+        uid,
+        to: composed.to.iter().map(ToString::to_string).collect(),
+        cc: composed.cc.iter().map(ToString::to_string).collect(),
+        bcc: composed.bcc.iter().map(ToString::to_string).collect(),
+        subject: composed.subject.clone(),
+    }
+}
+
+fn report_save_outcome(
+    outcome: draft::SaveOutcome,
+    account: &config::ResolvedAccount,
+    folder: &str,
+    composed: &draft::ComposedDraft,
+) -> Result<()> {
+    match outcome {
+        draft::SaveOutcome::Saved { uid } => {
+            println!(
+                "{}",
+                draft::render_receipt(&draft_receipt(account, folder, uid, composed))
+            );
+            Ok(())
+        }
+        draft::SaveOutcome::SavedUidUnresolved => {
+            bail!(
+                "The draft was saved, but its UID could not be resolved; inspect the Drafts folder before retrying"
+            )
+        }
+        draft::SaveOutcome::Unknown => {
+            bail!(
+                "The APPEND outcome is unknown after the connection was lost; inspect the Drafts folder before retrying"
+            )
+        }
+    }
+}
+
+fn save_draft(
+    factory: &DraftSessionFactory<'_>,
+    session: &mut connection::ImapSession,
+    folder: &str,
+    composed: &draft::ComposedDraft,
+) -> Result<draft::SaveOutcome> {
+    draft::save_composed_draft(
+        session,
+        || {
+            factory
+                .connect()
+                .map(|session| Box::new(session) as Box<dyn draft::DraftMailboxSession>)
+        },
+        folder,
+        composed,
+    )
+}
+
+fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> {
+    let sender = draft_sender(account)?;
+    let to = parse_recipient_flags(&args.to, "To")?;
+    let cc = parse_recipient_flags(&args.cc, "Cc")?;
+    let bcc = parse_recipient_flags(&args.bcc, "Bcc")?;
+    let (credential, body) =
+        read_draft_body_with(account, |name| std::env::var(name).ok(), std::io::stdin())?;
+    let factory = DraftSessionFactory {
+        account,
+        credential,
+    };
+    let mut session = factory.connect()?;
+    let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
+    let composed = draft::compose_new_draft(draft::NewDraftInput {
+        sender,
+        to,
+        cc,
+        bcc,
+        subject: args.subject.clone(),
+        body,
+        format: if args.html {
+            draft::BodyFormat::Html
+        } else {
+            draft::BodyFormat::Plain
+        },
+    })?;
+    let outcome = save_draft(&factory, &mut session, &folder, &composed);
+    let _ = session.logout();
+    report_save_outcome(outcome?, account, &folder, &composed)
+}
+
+fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> {
+    let sender = draft_sender(account)?;
+    let (credential, body) =
+        read_draft_body_with(account, |name| std::env::var(name).ok(), std::io::stdin())?;
+    let factory = DraftSessionFactory {
+        account,
+        credential,
+    };
+    let mut session = factory.connect()?;
+    let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
+    let source_folder = args.folder.as_deref().unwrap_or(&account.default_folder);
+    let source = fetch_reply_source(&mut session, source_folder, args.uid)?;
+    let composed = draft::compose_reply_draft(draft::ReplyDraftInput {
+        sender,
+        source: &source,
+        body,
+        format: if args.html {
+            draft::BodyFormat::Html
+        } else {
+            draft::BodyFormat::Plain
+        },
+        quote_original: !args.no_quote,
+    })?;
+    let outcome = save_draft(&factory, &mut session, &folder, &composed);
+    let _ = session.logout();
+    report_save_outcome(outcome?, account, &folder, &composed)
+}
+
+fn with_account_session<T, F>(account: &config::ResolvedAccount, f: F) -> Result<T>
+where
+    F: FnOnce(&mut connection::ImapSession) -> Result<T>,
+{
+    let mut pass = get_password_for_account(account)?;
+
+    let sp = spinner(&format!("Connecting to {}...", account.label()));
+    let session_result = connection::connect(
+        &account.host,
+        account.port,
+        account.tls,
+        &account.user,
+        &pass,
+    )
+    .with_context(|| format!("Account '{}'", account.label()));
+    sp.finish_and_clear();
+
+    // Clear password from memory on both success and error paths.
+    pass.zeroize();
+
+    let mut session = session_result?;
+    let result = f(&mut session);
+    let _ = session.logout();
+    result
+}
+
+fn tag_messages(messages: &mut [display::MessageRow], account: &config::ResolvedAccount) {
+    if let Some(name) = &account.name {
+        for msg in messages {
+            msg.account = Some(name.clone());
+        }
+    }
+}
+
+fn sort_and_limit_messages(messages: &mut Vec<display::MessageRow>, limit: Option<usize>) {
+    messages.sort_by_key(|message| std::cmp::Reverse(message.timestamp));
+    if let Some(n) = limit {
+        messages.truncate(n);
+    }
+}
+
+fn search_accounts(
+    accounts: &[config::ResolvedAccount],
+    filter: &FilterArgs,
+    limit: Option<usize>,
+) -> Result<Vec<display::MessageRow>> {
+    let mut all_messages = Vec::new();
+
+    for account in accounts {
+        let mut messages = with_account_session(account, |session| {
+            let sp = spinner(&format!("Searching {}...", account.label()));
+            let criteria = filter.to_criteria(limit, &account.default_folder);
+            let result = search::search(session, &criteria);
+            sp.finish_and_clear();
+            result
+        })?;
+        tag_messages(&mut messages, account);
+        all_messages.extend(messages);
+    }
+
+    if accounts.len() > 1 {
+        sort_and_limit_messages(&mut all_messages, limit);
+    }
+
+    Ok(all_messages)
+}
+
+fn command_supports_all_accounts(command: &Commands) -> bool {
+    matches!(
+        command,
+        Commands::Search(_)
+            | Commands::Read(_)
+            | Commands::Count(_)
+            | Commands::Quota
+            | Commands::Status
+    )
+}
+
+fn reject_all_accounts_if_unsupported(cli: &Cli) -> Result<()> {
+    if cli.all_accounts && !command_supports_all_accounts(&cli.command) {
+        bail!(
+            "--all-accounts is only supported for search, read, count, status, and quota; use --account <NAME> for this command"
+        );
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct QuotaRow {
+    account: Option<String>,
+    resource: String,
+    used: u64,
+    limit: u64,
+}
+
+fn fetch_quota_rows(
+    session: &mut connection::ImapSession,
+    account: &config::ResolvedAccount,
+) -> Result<Vec<QuotaRow>> {
+    if !session.has_capability("QUOTA") {
+        bail!(
+            "Account '{}': server does not support QUOTA extension (RFC 2087)",
+            account.label()
+        );
+    }
+
     let response = session
         .run_command_and_read_response("GETQUOTAROOT INBOX")
         .context("GETQUOTAROOT failed")?;
-    sp.finish_and_clear();
 
     let text = String::from_utf8_lossy(&response);
 
     // Parse: * QUOTA "root" (STORAGE used limit) (MESSAGE used limit) ...
-    let mut rows: Vec<(String, u64, u64)> = Vec::new();
+    let mut rows = Vec::new();
     for cap in quota_regex().captures_iter(&text) {
         let inner = &cap[1];
         if let Some(m) = quota_resource_regex().captures(inner) {
-            let name = m[1].to_string();
             let used: u64 = m[2].parse().unwrap_or(0);
             let limit: u64 = m[3].parse().unwrap_or(0);
-            rows.push((name, used, limit));
+            rows.push(QuotaRow {
+                account: account.name.clone(),
+                resource: m[1].to_string(),
+                used,
+                limit,
+            });
         }
     }
 
+    Ok(rows)
+}
+
+fn display_quota_rows(rows: &[QuotaRow], include_account: bool) {
     if rows.is_empty() {
         println!("No quota information available.");
-        return Ok(());
+        return;
     }
 
     let mut table = Table::new();
     table.load_preset(UTF8_FULL_CONDENSED);
-    table.set_header(vec!["Resource", "Used", "Limit", "Usage"]);
+    let mut header = vec!["Resource", "Used", "Limit", "Usage"];
+    if include_account {
+        header.insert(0, "Account");
+    }
+    table.set_header(header);
 
-    for (name, used, limit) in &rows {
-        let (used_str, limit_str) = if name.eq_ignore_ascii_case("STORAGE") {
+    for row in rows {
+        let (used_str, limit_str) = if row.resource.eq_ignore_ascii_case("STORAGE") {
             // STORAGE values are in KB
             (
-                display::format_size(used * 1024),
-                display::format_size(limit * 1024),
+                display::format_size(row.used * 1024),
+                display::format_size(row.limit * 1024),
             )
         } else {
-            (used.to_string(), limit.to_string())
+            (row.used.to_string(), row.limit.to_string())
         };
 
-        let pct = if *limit > 0 {
-            *used as f64 / *limit as f64 * 100.0
+        let pct = if row.limit > 0 {
+            row.used as f64 / row.limit as f64 * 100.0
         } else {
             0.0
         };
         let pct_str = format!("{pct:.1}%");
 
-        let mut row = vec![Cell::new(name), Cell::new(&used_str), Cell::new(&limit_str)];
+        let mut cells = Vec::new();
+        if include_account {
+            cells.push(Cell::new(row.account.as_deref().unwrap_or("")));
+        }
+        cells.push(Cell::new(&row.resource));
+        cells.push(Cell::new(&used_str));
+        cells.push(Cell::new(&limit_str));
         let pct_cell = if pct >= 90.0 {
             Cell::new(&pct_str).fg(Color::Red)
         } else if pct >= 75.0 {
@@ -412,28 +867,49 @@ fn cmd_quota(session: &mut connection::ImapSession) -> Result<()> {
         } else {
             Cell::new(&pct_str)
         };
-        row.push(pct_cell);
-        table.add_row(row);
+        cells.push(pct_cell);
+        table.add_row(cells);
     }
 
     println!("{table}");
+}
+
+fn cmd_quota_accounts(accounts: &[config::ResolvedAccount]) -> Result<()> {
+    let include_account =
+        accounts.len() > 1 || accounts.iter().any(|account| account.name.is_some());
+    let mut rows = Vec::new();
+    for account in accounts {
+        let mut account_rows = with_account_session(account, |session| {
+            let sp = spinner(&format!("Fetching quota for {}...", account.label()));
+            let result = fetch_quota_rows(session, account);
+            sp.finish_and_clear();
+            result
+        })?;
+        rows.append(&mut account_rows);
+    }
+    display_quota_rows(&rows, include_account);
     Ok(())
 }
 
-fn cmd_status(session: &mut connection::ImapSession) -> Result<()> {
-    let sp = spinner("Fetching folder status...");
+#[derive(Debug, Clone)]
+struct StatusRow {
+    account: Option<String>,
+    folder: String,
+    messages: Option<u32>,
+    unseen: Option<u32>,
+    recent: Option<u32>,
+}
+
+fn fetch_status_rows(
+    session: &mut connection::ImapSession,
+    account: &config::ResolvedAccount,
+) -> Result<Vec<StatusRow>> {
     let folders = session
         .list(Some(""), Some("*"))
         .context("Failed to list folders")?;
     let folder_names: Vec<String> = folders.iter().map(|f| f.name().to_string()).collect();
 
-    let mut table = Table::new();
-    table.load_preset(UTF8_FULL_CONDENSED);
-    table.set_header(vec!["Folder", "Messages", "Unseen", "Recent"]);
-
-    let mut total_messages: u32 = 0;
-    let mut total_unseen: u32 = 0;
-    let mut total_recent: u32 = 0;
+    let mut rows = Vec::new();
 
     for name in &folder_names {
         // Folder names are server-controlled, so always quote via imap_quote()
@@ -443,7 +919,13 @@ fn cmd_status(session: &mut connection::ImapSession) -> Result<()> {
         let response = match session.run_command_and_read_response(&cmd) {
             Ok(r) => r,
             Err(_) => {
-                table.add_row(vec![name.as_str(), "?", "?", "?"]);
+                rows.push(StatusRow {
+                    account: account.name.clone(),
+                    folder: name.clone(),
+                    messages: None,
+                    unseen: None,
+                    recent: None,
+                });
                 continue;
             }
         };
@@ -470,29 +952,84 @@ fn cmd_status(session: &mut connection::ImapSession) -> Result<()> {
             }
         }
 
-        total_messages += messages;
-        total_unseen += unseen;
-        total_recent += recent;
-
-        table.add_row(vec![
-            name.as_str(),
-            &messages.to_string(),
-            &unseen.to_string(),
-            &recent.to_string(),
-        ]);
+        rows.push(StatusRow {
+            account: account.name.clone(),
+            folder: name.clone(),
+            messages: Some(messages),
+            unseen: Some(unseen),
+            recent: Some(recent),
+        });
     }
 
-    sp.finish_and_clear();
+    Ok(rows)
+}
+
+fn status_cell(value: Option<u32>) -> Cell {
+    value.map(Cell::new).unwrap_or_else(|| Cell::new("?"))
+}
+
+fn display_status_rows(rows: &[StatusRow], include_account: bool) {
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL_CONDENSED);
+    let mut header = vec!["Folder", "Messages", "Unseen", "Recent"];
+    if include_account {
+        header.insert(0, "Account");
+    }
+    table.set_header(header);
+
+    let mut total_messages: u32 = 0;
+    let mut total_unseen: u32 = 0;
+    let mut total_recent: u32 = 0;
+
+    for row in rows {
+        total_messages += row.messages.unwrap_or(0);
+        total_unseen += row.unseen.unwrap_or(0);
+        total_recent += row.recent.unwrap_or(0);
+
+        let mut cells = Vec::new();
+        if include_account {
+            cells.push(Cell::new(row.account.as_deref().unwrap_or("")));
+        }
+        cells.push(Cell::new(&row.folder));
+        cells.push(status_cell(row.messages));
+        cells.push(status_cell(row.unseen));
+        cells.push(status_cell(row.recent));
+        table.add_row(cells);
+    }
 
     // Total row
-    table.add_row(vec![
-        Cell::new("Total").fg(Color::Cyan),
-        Cell::new(total_messages).fg(Color::Cyan),
-        Cell::new(total_unseen).fg(Color::Cyan),
-        Cell::new(total_recent).fg(Color::Cyan),
-    ]);
+    let mut total_row = Vec::new();
+    if include_account {
+        total_row.push(Cell::new("Total").fg(Color::Cyan));
+        total_row.push(Cell::new("").fg(Color::Cyan));
+    } else {
+        total_row.push(Cell::new("Total").fg(Color::Cyan));
+    }
+    total_row.push(Cell::new(total_messages).fg(Color::Cyan));
+    total_row.push(Cell::new(total_unseen).fg(Color::Cyan));
+    total_row.push(Cell::new(total_recent).fg(Color::Cyan));
+    table.add_row(total_row);
 
     println!("{table}");
+}
+
+fn cmd_status_accounts(accounts: &[config::ResolvedAccount]) -> Result<()> {
+    let include_account =
+        accounts.len() > 1 || accounts.iter().any(|account| account.name.is_some());
+    let mut rows = Vec::new();
+    for account in accounts {
+        let mut account_rows = with_account_session(account, |session| {
+            let sp = spinner(&format!(
+                "Fetching folder status for {}...",
+                account.label()
+            ));
+            let result = fetch_status_rows(session, account);
+            sp.finish_and_clear();
+            result
+        })?;
+        rows.append(&mut account_rows);
+    }
+    display_status_rows(&rows, include_account);
     Ok(())
 }
 
@@ -500,11 +1037,17 @@ fn cmd_export(
     session: &mut connection::ImapSession,
     args: &ExportArgs,
     default_folder: &str,
+    account_name: Option<&str>,
 ) -> Result<()> {
     let criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
-    let messages = search::search(session, &criteria)?;
+    let mut messages = search::search(session, &criteria)?;
     sp.finish_and_clear();
+    if let Some(account) = account_name {
+        for msg in &mut messages {
+            msg.account = Some(account.to_string());
+        }
+    }
 
     if messages.is_empty() {
         println!("No messages found.");
@@ -598,13 +1141,19 @@ fn cmd_mark(
     session: &mut connection::ImapSession,
     args: &MarkArgs,
     default_folder: &str,
+    account_name: Option<&str>,
 ) -> Result<()> {
     validate_mark_flags(args.read, args.unread, args.flagged, args.unflagged)?;
 
     let criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
-    let messages = search::search(session, &criteria)?;
+    let mut messages = search::search(session, &criteria)?;
     sp.finish_and_clear();
+    if let Some(account) = account_name {
+        for msg in &mut messages {
+            msg.account = Some(account.to_string());
+        }
+    }
 
     if messages.is_empty() {
         println!("No messages match the criteria.");
@@ -673,15 +1222,21 @@ fn cmd_mark(
     Ok(())
 }
 
-fn cmd_count(
+#[derive(Debug, Clone)]
+struct CountRow {
+    account: Option<String>,
+    folder: Option<String>,
+    count: usize,
+}
+
+fn count_rows_for_account(
     session: &mut connection::ImapSession,
+    account: &config::ResolvedAccount,
     args: &CountArgs,
-    default_folder: &str,
-) -> Result<()> {
+) -> Result<Vec<CountRow>> {
+    let default_folder = &account.default_folder;
     let criteria = args.filter.to_criteria(None, default_folder);
     let query = search::build_query(&criteria)?;
-
-    let sp = spinner("Counting...");
 
     if criteria.all_folders {
         let folders = session
@@ -693,8 +1248,7 @@ fn cmd_count(
             .filter(|n| !search::folders_to_skip(n))
             .collect();
 
-        let mut grand_total = 0usize;
-        let mut results: Vec<(String, usize)> = Vec::new();
+        let mut results = Vec::new();
 
         for folder in &folder_names {
             match session.select(folder) {
@@ -708,8 +1262,11 @@ fn cmd_count(
                 Ok(uids) => {
                     let count = uids.len();
                     if count > 0 {
-                        results.push((folder.clone(), count));
-                        grand_total += count;
+                        results.push(CountRow {
+                            account: account.name.clone(),
+                            folder: Some(folder.clone()),
+                            count,
+                        });
                     }
                 }
                 Err(e) => {
@@ -718,49 +1275,244 @@ fn cmd_count(
             }
         }
 
-        sp.finish_and_clear();
-
-        if args.json {
-            let folders: Vec<serde_json::Value> = results
-                .iter()
-                .map(|(f, c)| serde_json::json!({"folder": f, "count": c}))
-                .collect();
-            println!(
-                "{}",
-                serde_json::json!({"folders": folders, "total": grand_total})
-            );
-        } else if results.is_empty() {
-            println!("0 message(s) match.");
-        } else {
-            for (folder, count) in &results {
-                println!("{count} message(s) in {folder}");
-            }
-            if results.len() > 1 {
-                println!("{grand_total} message(s) total");
-            }
-        }
+        Ok(results)
     } else {
         session
             .select(&criteria.folder)
             .with_context(|| format!("Failed to select '{}'", criteria.folder))?;
 
         let uids = session.uid_search(&query).context("IMAP SEARCH failed")?;
-        sp.finish_and_clear();
-        if args.json {
+        Ok(vec![CountRow {
+            account: account.name.clone(),
+            folder: Some(criteria.folder),
+            count: uids.len(),
+        }])
+    }
+}
+
+fn display_count_json(
+    accounts: &[config::ResolvedAccount],
+    rows: &[CountRow],
+    all_folders: bool,
+    include_account: bool,
+) {
+    let total: usize = rows.iter().map(|row| row.count).sum();
+
+    if !include_account {
+        if all_folders {
+            let folders: Vec<serde_json::Value> = rows
+                .iter()
+                .map(|row| {
+                    serde_json::json!({
+                        "folder": row.folder.as_deref().unwrap_or(""),
+                        "count": row.count
+                    })
+                })
+                .collect();
             println!(
                 "{}",
-                serde_json::json!({"folder": criteria.folder, "count": uids.len()})
+                serde_json::json!({"folders": folders, "total": total})
             );
         } else {
-            println!("{} message(s) in {}", uids.len(), criteria.folder);
+            let row = rows.first();
+            println!(
+                "{}",
+                serde_json::json!({
+                    "folder": row.and_then(|r| r.folder.as_deref()).unwrap_or(""),
+                    "count": row.map(|r| r.count).unwrap_or(0)
+                })
+            );
         }
+        return;
     }
 
+    if all_folders {
+        let account_values: Vec<serde_json::Value> = accounts
+            .iter()
+            .map(|account| {
+                let account_rows: Vec<&CountRow> = rows
+                    .iter()
+                    .filter(|row| row.account == account.name)
+                    .collect();
+                let folders: Vec<serde_json::Value> = account_rows
+                    .iter()
+                    .map(|row| {
+                        serde_json::json!({
+                            "folder": row.folder.as_deref().unwrap_or(""),
+                            "count": row.count
+                        })
+                    })
+                    .collect();
+                let account_total: usize = account_rows.iter().map(|row| row.count).sum();
+                serde_json::json!({
+                    "account": account.label(),
+                    "folders": folders,
+                    "total": account_total
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({"accounts": account_values, "total": total})
+        );
+    } else {
+        let account_values: Vec<serde_json::Value> = accounts
+            .iter()
+            .map(|account| {
+                let count = rows
+                    .iter()
+                    .find(|row| row.account == account.name)
+                    .map(|row| row.count)
+                    .unwrap_or(0);
+                serde_json::json!({"account": account.label(), "count": count})
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::json!({"accounts": account_values, "total": total})
+        );
+    }
+}
+
+fn display_count_text(rows: &[CountRow], all_folders: bool, include_account: bool) {
+    let total: usize = rows.iter().map(|row| row.count).sum();
+
+    if !include_account {
+        if rows.is_empty() {
+            println!("0 message(s) match.");
+        } else if all_folders {
+            for row in rows {
+                println!(
+                    "{} message(s) in {}",
+                    row.count,
+                    row.folder.as_deref().unwrap_or("")
+                );
+            }
+            if rows.len() > 1 {
+                println!("{total} message(s) total");
+            }
+        } else if let Some(row) = rows.first() {
+            println!(
+                "{} message(s) in {}",
+                row.count,
+                row.folder.as_deref().unwrap_or("")
+            );
+        }
+        return;
+    }
+
+    if rows.is_empty() {
+        println!("0 message(s) match.");
+        return;
+    }
+
+    let mut table = Table::new();
+    table.load_preset(UTF8_FULL_CONDENSED);
+    let mut header = vec!["Account", "Count"];
+    if all_folders {
+        header.insert(1, "Folder");
+    }
+    table.set_header(header);
+
+    for row in rows {
+        let mut cells = vec![Cell::new(row.account.as_deref().unwrap_or(""))];
+        if all_folders {
+            cells.push(Cell::new(row.folder.as_deref().unwrap_or("")));
+        }
+        cells.push(Cell::new(row.count));
+        table.add_row(cells);
+    }
+
+    if rows.len() > 1 {
+        let mut total_row = vec![Cell::new("Total").fg(Color::Cyan)];
+        if all_folders {
+            total_row.push(Cell::new("").fg(Color::Cyan));
+        }
+        total_row.push(Cell::new(total).fg(Color::Cyan));
+        table.add_row(total_row);
+    }
+
+    println!("{table}");
+}
+
+fn cmd_count_accounts(accounts: &[config::ResolvedAccount], args: &CountArgs) -> Result<()> {
+    let mut rows = Vec::new();
+    for account in accounts {
+        let mut account_rows = with_account_session(account, |session| {
+            let sp = spinner(&format!("Counting {}...", account.label()));
+            let result = count_rows_for_account(session, account, args);
+            sp.finish_and_clear();
+            result
+        })?;
+        rows.append(&mut account_rows);
+    }
+
+    let include_account =
+        accounts.len() > 1 || accounts.iter().any(|account| account.name.is_some());
+    if args.json {
+        display_count_json(accounts, &rows, args.filter.all_folders, include_account);
+    } else {
+        display_count_text(&rows, args.filter.all_folders, include_account);
+    }
+    Ok(())
+}
+
+fn cmd_search_accounts(accounts: &[config::ResolvedAccount], args: &SearchArgs) -> Result<()> {
+    let messages = search_accounts(accounts, &args.filter, args.limit)?;
+    if args.json {
+        display::display_messages_json(&messages);
+    } else {
+        display::display_messages(&messages);
+    }
+    Ok(())
+}
+
+fn cmd_read_accounts(accounts: &[config::ResolvedAccount], args: &ReadArgs) -> Result<()> {
+    let limit = args.limit.or(Some(1));
+    let mut messages = Vec::new();
+    let mut defaults = read::DefaultFolderMap::new();
+    let mut bodies = read::MessageBodyMap::new();
+
+    for account in accounts {
+        let (mut account_messages, fetched, folder) = with_account_session(account, |session| {
+            let criteria = args.filter.to_criteria(limit, &account.default_folder);
+
+            let sp = spinner(&format!("Searching {}...", account.label()));
+            let result = search::search(session, &criteria);
+            sp.finish_and_clear();
+            let mut account_messages = result?;
+
+            tag_messages(&mut account_messages, account);
+
+            let sp = spinner(&format!("Fetching from {}...", account.label()));
+            let fetched = read::fetch_message_bodies(session, &account_messages, &criteria.folder);
+            sp.finish_and_clear();
+
+            Ok((account_messages, fetched?, criteria.folder))
+        })?;
+
+        for ((folder, uid), body) in fetched {
+            bodies.insert((account.name.clone(), folder, uid), body);
+        }
+        defaults.insert(account.name.clone(), folder);
+        messages.append(&mut account_messages);
+    }
+
+    sort_and_limit_messages(&mut messages, limit);
+    if messages.is_empty() {
+        println!("No messages found.");
+        return Ok(());
+    }
+
+    read::print_messages_with_bodies(&messages, &defaults, &bodies);
     Ok(())
 }
 
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let matches = Cli::command().get_matches();
+    let user_explicit = matches.value_source("user") == Some(ValueSource::CommandLine);
+    let tls_explicit = matches.value_source("tls") == Some(ValueSource::CommandLine);
+    let cli = Cli::from_arg_matches(&matches)?;
 
     // Handle commands that don't need an IMAP connection
     match &cli.command {
@@ -783,86 +1535,312 @@ fn main() -> Result<()> {
     // Load config: explicit --config path > default location > empty
     let cfg = config::Config::load(cli.config.as_deref())?;
 
-    // Resolve values: CLI/env > config > built-in default
-    let tls = cli.tls || cfg.tls.unwrap_or(false);
-    let host = cli
-        .host
-        .or(cfg.host)
-        .unwrap_or_else(|| "127.0.0.1".to_string());
-    let port = cli
-        .port
-        .or(cfg.port)
-        .unwrap_or(if tls { 993 } else { 1143 });
-    let user = cli.user.or(cfg.user).ok_or_else(|| {
-        anyhow::anyhow!("IMAP username required (use -u/--user or SLASHMAIL_USER env)")
-    })?;
-    let default_folder = cfg.default_folder.unwrap_or_else(|| "INBOX".to_string());
-    let default_trash = cfg.trash_folder.unwrap_or_else(|| "Trash".to_string());
+    reject_all_accounts_if_unsupported(&cli)?;
 
-    let mut pass = get_password()?;
-
-    let sp = spinner("Connecting...");
-    let session_result = connection::connect(&host, port, tls, &user, &pass);
-    sp.finish_and_clear();
-
-    // Clear password from memory on both success and error paths.
-    pass.zeroize();
-
-    let mut session = session_result?;
+    let selector = if cli.all_accounts {
+        config::AccountSelector::All
+    } else if let Some(name) = cli.account.as_deref() {
+        config::AccountSelector::Named(name)
+    } else {
+        config::AccountSelector::Default
+    };
+    let overrides = config::ConnectionOverrides {
+        host: cli.host.clone(),
+        port: cli.port,
+        tls: if tls_explicit { Some(cli.tls) } else { None },
+        user: cli.user.clone(),
+        user_explicit,
+    };
+    let accounts = cfg.resolve_accounts(selector, &overrides)?;
 
     let result = match &cli.command {
-        Commands::Search(args) => {
-            let criteria = args.filter.to_criteria(args.limit, &default_folder);
-            let sp = spinner("Searching...");
-            let messages = search::search(&mut session, &criteria)?;
-            sp.finish_and_clear();
-            if args.json {
-                display::display_messages_json(&messages);
-            } else {
-                display::display_messages(&messages);
-            }
-            Ok(())
-        }
-        Commands::Read(args) => {
-            let limit = args.limit.or(Some(1));
-            let criteria = args.filter.to_criteria(limit, &default_folder);
-            let sp = spinner("Searching...");
-            let messages = search::search(&mut session, &criteria)?;
-            sp.finish_and_clear();
-            if messages.is_empty() {
-                println!("No messages found.");
-                Ok(())
-            } else {
-                let sp = spinner("Fetching...");
-                let r = read::read_messages(&mut session, &messages, &criteria.folder);
-                sp.finish_and_clear();
-                r
-            }
-        }
+        Commands::Draft(args) => cmd_draft(&accounts[0], args),
+        Commands::Reply(args) => cmd_reply(&accounts[0], args),
+        Commands::Search(args) => cmd_search_accounts(&accounts, args),
+        Commands::Read(args) => cmd_read_accounts(&accounts, args),
         Commands::Delete(args) => {
-            let criteria = args.filter.to_criteria(args.limit, &default_folder);
-            let trash = args.trash_folder.as_deref().unwrap_or(&default_trash);
-            delete::delete(&mut session, &criteria, trash, args.yes, args.dry_run)
+            let account = &accounts[0];
+            with_account_session(account, |session| {
+                let criteria = args.filter.to_criteria(args.limit, &account.default_folder);
+                let trash = args
+                    .trash_folder
+                    .as_deref()
+                    .unwrap_or(&account.trash_folder);
+                delete::delete_with_account(
+                    session,
+                    &criteria,
+                    trash,
+                    args.yes,
+                    args.dry_run,
+                    account.name.as_deref(),
+                )
+            })
         }
         Commands::Move(args) => {
-            let criteria = args.filter.to_criteria(args.limit, &default_folder);
-            delete::search_and_move(&mut session, &criteria, &args.to, args.yes, args.dry_run)
+            let account = &accounts[0];
+            with_account_session(account, |session| {
+                let criteria = args.filter.to_criteria(args.limit, &account.default_folder);
+                delete::search_and_move_with_account(
+                    session,
+                    &criteria,
+                    &args.to,
+                    args.yes,
+                    args.dry_run,
+                    account.name.as_deref(),
+                )
+            })
         }
-        Commands::Export(args) => cmd_export(&mut session, args, &default_folder),
-        Commands::Mark(args) => cmd_mark(&mut session, args, &default_folder),
-        Commands::Count(args) => cmd_count(&mut session, args, &default_folder),
-        Commands::Quota => cmd_quota(&mut session),
-        Commands::Status => cmd_status(&mut session),
+        Commands::Export(args) => {
+            let account = &accounts[0];
+            with_account_session(account, |session| {
+                cmd_export(
+                    session,
+                    args,
+                    &account.default_folder,
+                    account.name.as_deref(),
+                )
+            })
+        }
+        Commands::Mark(args) => {
+            let account = &accounts[0];
+            with_account_session(account, |session| {
+                cmd_mark(
+                    session,
+                    args,
+                    &account.default_folder,
+                    account.name.as_deref(),
+                )
+            })
+        }
+        Commands::Count(args) => cmd_count_accounts(&accounts, args),
+        Commands::Quota => cmd_quota_accounts(&accounts),
+        Commands::Status => cmd_status_accounts(&accounts),
         Commands::Completions { .. } | Commands::Manpage => unreachable!(),
     };
 
-    let _ = session.logout();
     result
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn draft_account() -> config::ResolvedAccount {
+        config::ResolvedAccount {
+            name: Some("work".to_string()),
+            host: "imap.example.com".to_string(),
+            port: 993,
+            tls: true,
+            user: "login".to_string(),
+            pass_env: Some("WORK_PASS".to_string()),
+            sender: Some("Me <me@example.com>".to_string()),
+            drafts_folder: None,
+            trash_folder: "Trash".to_string(),
+            default_folder: "INBOX".to_string(),
+        }
+    }
+
+    struct MustNotRead;
+
+    impl Read for MustNotRead {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            panic!("stdin was read before credentials were resolved")
+        }
+    }
+
+    #[test]
+    fn draft_clap_accepts_repeated_single_mailbox_flags() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "draft",
+            "--to",
+            "one@example.com",
+            "--to",
+            "\"Two, Person\" <two@example.com>",
+            "--cc",
+            "cc@example.com",
+            "--bcc",
+            "bcc@example.com",
+            "--subject",
+            "Hello",
+            "--html",
+            "--drafts-folder",
+            "Nested/Drafts",
+        ])
+        .unwrap();
+        let Commands::Draft(args) = cli.command else {
+            panic!("expected draft command")
+        };
+        assert_eq!(args.to.len(), 2);
+        assert_eq!(args.cc, ["cc@example.com"]);
+        assert_eq!(args.bcc, ["bcc@example.com"]);
+        assert!(args.html);
+        assert_eq!(args.drafts_folder.as_deref(), Some("Nested/Drafts"));
+    }
+
+    #[test]
+    fn reply_clap_has_only_the_confirmed_override_surface() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "reply",
+            "42",
+            "--folder",
+            "Archive",
+            "--html",
+            "--no-quote",
+            "--drafts-folder",
+            "Drafts",
+        ])
+        .unwrap();
+        let Commands::Reply(args) = cli.command else {
+            panic!("expected reply command")
+        };
+        assert_eq!(args.uid, 42);
+        assert_eq!(args.folder.as_deref(), Some("Archive"));
+        assert!(args.html);
+        assert!(args.no_quote);
+        assert!(
+            Cli::try_parse_from(["slashmail", "reply", "42", "--subject", "override"]).is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["slashmail", "reply", "42", "--to", "other@example.com"]).is_err()
+        );
+        assert!(Cli::try_parse_from(["slashmail", "reply", "0"]).is_err());
+    }
+
+    #[test]
+    fn draft_and_reply_reject_all_accounts() {
+        for command in [
+            vec![
+                "slashmail",
+                "--all-accounts",
+                "draft",
+                "--to",
+                "to@example.com",
+            ],
+            vec!["slashmail", "--all-accounts", "reply", "42"],
+        ] {
+            let cli = Cli::try_parse_from(command).unwrap();
+            assert!(reject_all_accounts_if_unsupported(&cli).is_err());
+        }
+    }
+
+    #[test]
+    fn missing_or_empty_draft_credential_fails_before_stdin_read() {
+        let account = draft_account();
+        assert!(read_draft_body_with(&account, |_| None, MustNotRead).is_err());
+        assert!(read_draft_body_with(&account, |_| Some(String::new()), MustNotRead).is_err());
+    }
+
+    #[test]
+    fn draft_transport_requires_tls_before_stdin_for_remote_hosts() {
+        let mut account = draft_account();
+        account.tls = false;
+        let error = read_draft_body_with(&account, |_| Some("secret".to_string()), MustNotRead)
+            .err()
+            .expect("remote plaintext draft should fail");
+        assert!(error.to_string().contains("require TLS"));
+
+        account.host = "127.0.0.1".to_string();
+        let (_, body) =
+            read_draft_body_with(&account, |_| Some("secret".to_string()), b"body".as_slice())
+                .unwrap();
+        assert_eq!(body, "body");
+    }
+
+    #[test]
+    fn draft_body_preserves_unicode_and_uses_configured_environment_name() {
+        let account = draft_account();
+        let body = "Héllo 世界\nSecond line";
+        let mut requested = String::new();
+        let (credential, read) = read_draft_body_with(
+            &account,
+            |name| {
+                requested = name.to_string();
+                Some("secret".to_string())
+            },
+            body.as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(requested, "WORK_PASS");
+        assert_eq!(credential.expose(), "secret");
+        assert_eq!(read, body);
+    }
+
+    #[test]
+    fn legacy_draft_credential_uses_slashmail_pass() {
+        let mut account = draft_account();
+        account.name = None;
+        account.pass_env = None;
+        account.user = "me@example.com".to_string();
+        let mut requested = String::new();
+        let credential = draft_credential_with(&account, |name| {
+            requested = name.to_string();
+            Some("secret".to_string())
+        })
+        .unwrap();
+        assert_eq!(requested, "SLASHMAIL_PASS");
+        assert_eq!(credential.expose(), "secret");
+    }
+
+    #[test]
+    fn named_draft_account_requires_pass_env() {
+        let mut account = draft_account();
+        account.pass_env = None;
+        assert!(draft_credential_with(&account, |_| Some("secret".to_string())).is_err());
+    }
+
+    #[test]
+    fn sender_adaptation_prefers_config_and_requires_a_typed_fallback() {
+        let account = draft_account();
+        assert_eq!(
+            draft_sender(&account).unwrap().email.to_string(),
+            "me@example.com"
+        );
+
+        let mut fallback = account.clone();
+        fallback.sender = None;
+        fallback.user = "fallback@example.com".to_string();
+        assert_eq!(
+            draft_sender(&fallback).unwrap().email.to_string(),
+            "fallback@example.com"
+        );
+
+        fallback.user = "not-a-mailbox".to_string();
+        assert!(draft_sender(&fallback).is_err());
+    }
+
+    #[test]
+    fn draft_failures_do_not_echo_credentials_body_or_mime() {
+        let account = draft_account();
+        let credential_error = read_draft_body_with(&account, |_| None, "private body".as_bytes())
+            .err()
+            .expect("missing credentials should fail");
+        let rendered = credential_error.to_string();
+        assert!(!rendered.contains("private body"));
+        assert!(!rendered.contains("super-secret-password"));
+
+        let composed = draft::compose_new_draft(draft::NewDraftInput {
+            sender: draft::parse_mailbox("me@example.com", "sender").unwrap(),
+            to: vec![draft::parse_mailbox("you@example.com", "To").unwrap()],
+            cc: Vec::new(),
+            bcc: Vec::new(),
+            subject: "Sensitive subject".to_string(),
+            body: "private body".to_string(),
+            format: draft::BodyFormat::Plain,
+        })
+        .unwrap();
+        for outcome in [
+            draft::SaveOutcome::SavedUidUnresolved,
+            draft::SaveOutcome::Unknown,
+        ] {
+            let error = report_save_outcome(outcome, &account, "Drafts", &composed).unwrap_err();
+            let rendered = error.to_string();
+            assert!(!rendered.contains("private body"));
+            assert!(!rendered.contains("Content-Type"));
+            assert!(!rendered.contains("super-secret-password"));
+        }
+    }
 
     #[test]
     fn validate_mark_flags_no_flags() {

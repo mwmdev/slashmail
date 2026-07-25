@@ -1,16 +1,21 @@
 #![cfg(feature = "integration-tests")]
 
+use std::io::Write;
+use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::thread;
 use std::time::Duration;
+use std::{path::Path, process::Command};
 
 use lettre::message::header::ContentType;
 use lettre::transport::smtp::client::Tls;
 use lettre::{Message, SmtpTransport, Transport};
+use mailparse::MailHeaderMap;
 
 use slashmail::connection::{self, ImapSession};
 use slashmail::delete;
 use slashmail::export;
+use slashmail::read;
 use slashmail::search::{self, SearchCriteria};
 
 static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -68,6 +73,7 @@ fn send_email_with_cc(from: &str, to: &str, cc: &str, subject: &str, body: &str)
         .to(to_addr.parse().unwrap())
         .cc(cc_addr.parse().unwrap())
         .subject(subject)
+        .message_id(None)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
         .unwrap();
@@ -114,6 +120,93 @@ fn sleep_for_delivery() {
     thread::sleep(Duration::from_millis(500));
 }
 
+fn slashmail_bin() -> String {
+    std::env::var("CARGO_BIN_EXE_slashmail").unwrap_or_else(|_| {
+        let mut path = std::env::current_exe().unwrap();
+        path.pop();
+        if path.ends_with("deps") {
+            path.pop();
+        }
+        path.push("slashmail");
+        path.to_string_lossy().into_owned()
+    })
+}
+
+fn write_multi_account_config(path: &Path, accounts: &[(&str, &str)]) {
+    let mut config = String::from("default_account = \"personal\"\n\n");
+    for (name, user) in accounts {
+        let email = user_email(user);
+        config.push_str(&format!(
+            "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = {}\ntls = false\nuser = \"{email}\"\npass_env = \"SLASHMAIL_{}_PASS\"\ndefault_folder = \"INBOX\"\n\n",
+            imap_port(),
+            name.to_uppercase()
+        ));
+    }
+    std::fs::write(path, config).unwrap();
+}
+
+fn slashmail_cmd(config_path: &Path, accounts: &[(&str, &str)]) -> Command {
+    let mut cmd = Command::new(slashmail_bin());
+    cmd.arg("--config").arg(config_path);
+    for (name, user) in accounts {
+        cmd.env(
+            format!("SLASHMAIL_{}_PASS", name.to_uppercase()),
+            user_email(user),
+        );
+    }
+    cmd
+}
+
+fn assert_cmd_success(output: std::process::Output) -> String {
+    assert!(
+        output.status.success(),
+        "command failed\nstatus: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8(output.stdout).unwrap()
+}
+
+fn output_with_stdin(mut command: Command, input: &str) -> std::process::Output {
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(input.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
+
+fn create_drafts_folder(user: &str) {
+    let mut session = imap_connect(user);
+    session.create("Drafts").unwrap();
+    session.logout().unwrap();
+}
+
+fn only_message_in(session: &mut ImapSession, folder: &str) -> (u32, Vec<u8>, Vec<String>) {
+    session.select(folder).unwrap();
+    let uids = session.uid_search("ALL").unwrap();
+    assert_eq!(uids.len(), 1, "expected one message in {folder}");
+    let uid = *uids.iter().next().unwrap();
+    let fetches = session
+        .uid_fetch(&uid.to_string(), "(UID FLAGS BODY.PEEK[])")
+        .unwrap();
+    assert_eq!(fetches.len(), 1);
+    let fetch = &fetches[0];
+    (
+        uid,
+        fetch.body().unwrap().to_vec(),
+        fetch.flags().iter().map(ToString::to_string).collect(),
+    )
+}
+
 /// Convert days since Unix epoch to (year, month, day). Simple civil calendar math.
 fn epoch_days_to_ymd(days: u64) -> (u64, u64, u64) {
     // Algorithm from http://howardhinnant.github.io/date_algorithms.html
@@ -135,6 +228,224 @@ fn connect_and_logout() {
     let user = unique_user();
     let mut session = imap_connect(&user);
     session.logout().unwrap();
+}
+
+#[test]
+fn cli_saves_plain_draft_with_headers_flag_and_no_delivery() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let cc = unique_user();
+    let bcc = unique_user();
+    for user in [&recipient, &cc, &bcc] {
+        let mut session = imap_connect(user);
+        session.logout().unwrap();
+    }
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args([
+        "--account",
+        "personal",
+        "draft",
+        "--to",
+        &user_email(&recipient),
+        "--cc",
+        &user_email(&cc),
+        "--bcc",
+        &user_email(&bcc),
+        "--subject",
+        "Stored plain draft",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let output = output_with_stdin(command, "Héllo from stdin\nSecond line");
+    let stdout = assert_cmd_success(output);
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(stdout.contains("Draft saved: Account=personal | Folder=Drafts | UID="));
+    assert!(stdout.contains("Subject=Stored plain draft"));
+
+    let mut owner_session = imap_connect(&owner);
+    let (_uid, raw, flags) = only_message_in(&mut owner_session, "Drafts");
+    assert!(flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    assert_eq!(
+        parsed.headers.get_first_value("From").as_deref(),
+        Some(user_email(&owner).as_str())
+    );
+    assert_eq!(
+        parsed.headers.get_first_value("Subject").as_deref(),
+        Some("Stored plain draft")
+    );
+    assert!(parsed
+        .headers
+        .get_first_value("To")
+        .unwrap()
+        .contains(&user_email(&recipient)));
+    assert!(parsed
+        .headers
+        .get_first_value("Cc")
+        .unwrap()
+        .contains(&user_email(&cc)));
+    assert!(parsed
+        .headers
+        .get_first_value("Bcc")
+        .unwrap()
+        .contains(&user_email(&bcc)));
+    assert_eq!(parsed.ctype.mimetype, "text/plain");
+    assert_eq!(
+        parsed
+            .get_body()
+            .unwrap()
+            .replace("\r\n", "\n")
+            .trim_end()
+            .to_string(),
+        "Héllo from stdin\nSecond line"
+    );
+    assert!(parsed.headers.get_first_value("Message-ID").is_some());
+    owner_session.logout().unwrap();
+
+    for user in [&recipient, &cc, &bcc] {
+        let mut session = imap_connect(user);
+        session.select("INBOX").unwrap();
+        assert!(
+            session.uid_search("ALL").unwrap().is_empty(),
+            "APPEND must not deliver mail to {user}"
+        );
+        session.logout().unwrap();
+    }
+}
+
+#[test]
+fn cli_saves_html_draft_as_html_without_delivery() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.logout().unwrap();
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args([
+        "--account",
+        "personal",
+        "draft",
+        "--to",
+        &user_email(&recipient),
+        "--html",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let output = output_with_stdin(command, "<p>Héllo <strong>HTML</strong></p>");
+    assert_cmd_success(output);
+
+    let mut session = imap_connect(&owner);
+    let (_, raw, flags) = only_message_in(&mut session, "Drafts");
+    assert!(flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    assert_eq!(parsed.ctype.mimetype, "text/html");
+    assert_eq!(
+        parsed.get_body().unwrap().trim_end(),
+        "<p>Héllo <strong>HTML</strong></p>"
+    );
+    session.logout().unwrap();
+
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.select("INBOX").unwrap();
+    assert!(recipient_session.uid_search("ALL").unwrap().is_empty());
+    recipient_session.logout().unwrap();
+}
+
+#[test]
+fn cli_saves_threaded_reply_without_changing_source_state_or_sending() {
+    let owner = unique_user();
+    let sender = unique_user();
+    let cc = unique_user();
+    let sender_email = user_email(&sender);
+    let mut sender_session = imap_connect(&sender);
+    sender_session.logout().unwrap();
+    let mut cc_session = imap_connect(&cc);
+    cc_session.logout().unwrap();
+    send_email_with_cc(&sender_email, &owner, &cc, "Thread topic", "Original body");
+    sleep_for_delivery();
+    create_drafts_folder(&owner);
+
+    let mut owner_session = imap_connect(&owner);
+    let (source_uid, source_raw, source_flags) = only_message_in(&mut owner_session, "INBOX");
+    assert!(!source_flags.iter().any(|flag| {
+        flag.eq_ignore_ascii_case("\\Seen") || flag.eq_ignore_ascii_case("\\Answered")
+    }));
+    let source = mailparse::parse_mail(&source_raw).unwrap();
+    let source_message_id = source.headers.get_first_value("Message-ID").unwrap();
+    owner_session.logout().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args([
+        "--account",
+        "personal",
+        "reply",
+        &source_uid.to_string(),
+        "--folder",
+        "INBOX",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let output = output_with_stdin(command, "My reply");
+    let stdout = assert_cmd_success(output);
+    assert!(stdout.contains("Subject=Re: Thread topic"));
+
+    let mut owner_session = imap_connect(&owner);
+    let (_, reply_raw, reply_flags) = only_message_in(&mut owner_session, "Drafts");
+    assert!(reply_flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let reply = mailparse::parse_mail(&reply_raw).unwrap();
+    assert!(reply
+        .headers
+        .get_first_value("To")
+        .unwrap()
+        .contains(&sender_email));
+    assert!(reply
+        .headers
+        .get_first_value("Cc")
+        .unwrap()
+        .contains(&user_email(&cc)));
+    assert_eq!(
+        reply.headers.get_first_value("In-Reply-To").as_deref(),
+        Some(source_message_id.as_str())
+    );
+    let reply_body = reply.get_body().unwrap();
+    assert!(reply_body.contains("My reply"));
+    assert!(reply_body.contains("> Original body"));
+
+    let (same_uid, _, source_flags_after) = only_message_in(&mut owner_session, "INBOX");
+    assert_eq!(same_uid, source_uid);
+    assert!(!source_flags_after.iter().any(|flag| {
+        flag.eq_ignore_ascii_case("\\Seen") || flag.eq_ignore_ascii_case("\\Answered")
+    }));
+    owner_session.logout().unwrap();
+
+    let mut sender_session = imap_connect(&sender);
+    sender_session.select("INBOX").unwrap();
+    assert!(
+        sender_session.uid_search("ALL").unwrap().is_empty(),
+        "saving a reply draft must not deliver it"
+    );
+    sender_session.logout().unwrap();
 }
 
 #[test]
@@ -164,6 +475,113 @@ fn search_finds_seeded_email() {
     assert!(results[0].from.contains("sender@localhost"));
 
     session.logout().unwrap();
+}
+
+#[test]
+fn cli_search_all_accounts_finds_messages_from_two_accounts() {
+    let personal = unique_user();
+    let work = unique_user();
+    send_email(&personal, "Shared report personal", "personal body");
+    send_email(&work, "Shared report work", "work body");
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", personal.as_str()), ("work", work.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let output = slashmail_cmd(&config, &accounts)
+        .args([
+            "search",
+            "--all-accounts",
+            "--subject",
+            "Shared report",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+    let rows: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let rows = rows.as_array().unwrap();
+
+    assert_eq!(rows.len(), 2);
+    assert!(rows
+        .iter()
+        .any(|row| row["account"] == "personal" && row["subject"] == "Shared report personal"));
+    assert!(rows
+        .iter()
+        .any(|row| row["account"] == "work" && row["subject"] == "Shared report work"));
+}
+
+#[test]
+fn cli_count_all_accounts_reports_per_account_totals() {
+    let personal = unique_user();
+    let work = unique_user();
+    send_email(&personal, "Count report personal", "personal body");
+    send_email(&work, "Count report work A", "work body");
+    send_email(&work, "Count report work B", "work body");
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", personal.as_str()), ("work", work.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let output = slashmail_cmd(&config, &accounts)
+        .args([
+            "count",
+            "--all-accounts",
+            "--subject",
+            "Count report",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(json["total"], 3);
+    let accounts = json["accounts"].as_array().unwrap();
+    assert!(accounts
+        .iter()
+        .any(|account| account["account"] == "personal" && account["count"] == 1));
+    assert!(accounts
+        .iter()
+        .any(|account| account["account"] == "work" && account["count"] == 2));
+}
+
+#[test]
+fn cli_read_all_accounts_prints_bodies_from_each_account() {
+    let personal = unique_user();
+    let work = unique_user();
+    send_email(
+        &personal,
+        "Read aggregate personal",
+        "personal aggregate body",
+    );
+    send_email(&work, "Read aggregate work", "work aggregate body");
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", personal.as_str()), ("work", work.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let output = slashmail_cmd(&config, &accounts)
+        .args([
+            "read",
+            "--all-accounts",
+            "--subject",
+            "Read aggregate",
+            "-n",
+            "2",
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+
+    assert!(stdout.contains("personal aggregate body"));
+    assert!(stdout.contains("work aggregate body"));
 }
 
 #[test]
@@ -556,58 +974,6 @@ fn export_creates_eml_files() {
     assert!(content.contains("Export Test"));
 
     // Cleanup
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    session.logout().unwrap();
-}
-
-#[test]
-fn export_skips_existing_without_force() {
-    let user = unique_user();
-    send_email(&user, "Export Skip Test", "body");
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
-
-    let temp_dir = std::env::temp_dir().join(format!("slashmail_skip_{user}"));
-
-    // First export
-    let (exported, _) =
-        export::export_messages(&mut session, &messages, "INBOX", &temp_dir, false).unwrap();
-    assert_eq!(exported, 1);
-
-    // Second export without force — should skip
-    let (exported, skipped) =
-        export::export_messages(&mut session, &messages, "INBOX", &temp_dir, false).unwrap();
-    assert_eq!(exported, 0);
-    assert_eq!(skipped, 1);
-
-    let _ = std::fs::remove_dir_all(&temp_dir);
-    session.logout().unwrap();
-}
-
-#[test]
-fn export_force_overwrites() {
-    let user = unique_user();
-    send_email(&user, "Export Force Test", "body");
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
-
-    let temp_dir = std::env::temp_dir().join(format!("slashmail_force_{user}"));
-
-    // First export
-    export::export_messages(&mut session, &messages, "INBOX", &temp_dir, false).unwrap();
-
-    // Second export with force — should overwrite
-    let (exported, skipped) =
-        export::export_messages(&mut session, &messages, "INBOX", &temp_dir, true).unwrap();
-    assert_eq!(exported, 1);
-    assert_eq!(skipped, 0);
-
     let _ = std::fs::remove_dir_all(&temp_dir);
     session.logout().unwrap();
 }
@@ -1157,6 +1523,197 @@ fn export_force_overwrite() {
         export::export_messages(&mut session, &messages, "INBOX", tmp.path(), true).unwrap();
     assert_eq!(exported, 1);
     assert_eq!(skipped, 0);
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn read_displays_message_content() {
+    let user = unique_user();
+    send_email(
+        &user,
+        "Read test subject",
+        "This is the body text for reading",
+    );
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1);
+
+    // read_messages prints to stdout — just verify it doesn't error
+    let result = read::read_messages(&mut session, &messages, "INBOX");
+    assert!(result.is_ok(), "read_messages should succeed: {result:?}");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn read_fetches_from_explicit_non_default_folder() {
+    let user = unique_user();
+    send_email(&user, "Inbox read fallback", "inbox body");
+    send_email(&user, "Archive read fallback", "archive body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.create("Archive").unwrap();
+
+    let inbox_results = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let archive_msg = inbox_results
+        .iter()
+        .find(|m| m.subject.contains("Archive read fallback"))
+        .unwrap();
+    let uid_set = archive_msg.uid.to_string();
+    session.select("INBOX").unwrap();
+    session.uid_move_or_fallback(&uid_set, "Archive").unwrap();
+
+    let mut criteria = default_criteria("Archive");
+    criteria.subject = Some("Archive read fallback".to_string());
+    let messages = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1);
+    assert!(
+        messages[0].folder.is_none(),
+        "single-folder search rows intentionally omit folder metadata"
+    );
+
+    let bodies = read::fetch_message_bodies(&mut session, &messages, "Archive").unwrap();
+    let raw = bodies
+        .get(&("Archive".to_string(), messages[0].uid))
+        .expect("body should be fetched from Archive");
+    let text = String::from_utf8_lossy(raw);
+    assert!(text.contains("archive body"));
+    assert!(!text.contains("inbox body"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_smaller() {
+    let user = unique_user();
+    let small_body = "tiny";
+    let large_body = "x".repeat(10_000);
+    send_email(&user, "Small msg", small_body);
+    send_email(&user, "Large msg", &large_body);
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.smaller = Some("5K".to_string());
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the small message should match");
+    assert!(results[0].subject.contains("Small msg"));
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_flagged() {
+    let user = unique_user();
+    send_email(&user, "Flagged msg", "body");
+    send_email(&user, "Normal msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    // Flag the first message
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Flagged)")
+        .unwrap();
+
+    let mut criteria = default_criteria("INBOX");
+    criteria.flagged = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the flagged message should match");
+
+    // Unflagged should find the other one
+    let mut criteria2 = default_criteria("INBOX");
+    criteria2.unflagged = true;
+    let results2 = search::search(&mut session, &criteria2).unwrap();
+
+    assert_eq!(results2.len(), 1, "Only the unflagged message should match");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_answered() {
+    let user = unique_user();
+    send_email(&user, "Answered msg", "body");
+    send_email(&user, "Unanswered msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Answered)")
+        .unwrap();
+
+    let mut criteria = default_criteria("INBOX");
+    criteria.answered = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the answered message should match");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_by_draft() {
+    let user = unique_user();
+    send_email(&user, "Draft msg", "body");
+    send_email(&user, "Normal msg", "body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+
+    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
+    all_uids.sort();
+    session
+        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Draft)")
+        .unwrap();
+
+    let mut criteria = default_criteria("INBOX");
+    criteria.draft = true;
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(results.len(), 1, "Only the draft message should match");
+
+    session.logout().unwrap();
+}
+
+#[test]
+fn search_size_range() {
+    let user = unique_user();
+    let tiny_body = "small";
+    let medium_body = "m".repeat(5_000);
+    let large_body = "x".repeat(50_000);
+    send_email(&user, "Tiny msg", tiny_body);
+    send_email(&user, "Medium msg", &medium_body);
+    send_email(&user, "Large msg", &large_body);
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&user);
+    let mut criteria = default_criteria("INBOX");
+    criteria.larger = Some("1K".to_string());
+    criteria.smaller = Some("10K".to_string());
+    let results = search::search(&mut session, &criteria).unwrap();
+
+    assert_eq!(
+        results.len(),
+        1,
+        "Only the medium message should match the size range"
+    );
+    assert!(results[0].subject.contains("Medium msg"));
 
     session.logout().unwrap();
 }

@@ -32,13 +32,14 @@ regex = "1"
 zeroize = "1"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 html2text = "0.15.5"
+lettre = { version = "=0.11.19", default-features = false, features = ["builder"] }
 
 [features]
 vendored-openssl = ["openssl"]
 integration-tests = []
 
 [dev-dependencies]
-lettre = "0.11"
+lettre = { version = "=0.11.19", default-features = false, features = ["builder", "smtp-transport", "native-tls"] }
 tempfile = ">=3,<3.25"
 
 [patch.crates-io]

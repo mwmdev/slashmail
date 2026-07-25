@@ -25,9 +25,25 @@ pub fn search_and_move(
     yes: bool,
     dry_run: bool,
 ) -> Result<()> {
+    search_and_move_with_account(session, criteria, dest, yes, dry_run, None)
+}
+
+pub fn search_and_move_with_account(
+    session: &mut ImapSession,
+    criteria: &SearchCriteria,
+    dest: &str,
+    yes: bool,
+    dry_run: bool,
+    account_name: Option<&str>,
+) -> Result<()> {
     let sp = spinner("Searching...");
-    let messages = search::search(session, criteria)?;
+    let mut messages = search::search(session, criteria)?;
     sp.finish_and_clear();
+    if let Some(account) = account_name {
+        for msg in &mut messages {
+            msg.account = Some(account.to_string());
+        }
+    }
 
     if messages.is_empty() {
         println!("No messages match the criteria.");
@@ -99,5 +115,16 @@ pub fn delete(
     yes: bool,
     dry_run: bool,
 ) -> Result<()> {
-    search_and_move(session, criteria, trash_folder, yes, dry_run)
+    delete_with_account(session, criteria, trash_folder, yes, dry_run, None)
+}
+
+pub fn delete_with_account(
+    session: &mut ImapSession,
+    criteria: &SearchCriteria,
+    trash_folder: &str,
+    yes: bool,
+    dry_run: bool,
+    account_name: Option<&str>,
+) -> Result<()> {
+    search_and_move_with_account(session, criteria, trash_folder, yes, dry_run, account_name)
 }

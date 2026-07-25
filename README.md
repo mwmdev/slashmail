@@ -2,9 +2,11 @@
 
 [![CI](https://github.com/mwmdev/slashmail/actions/workflows/ci.yml/badge.svg)](https://github.com/mwmdev/slashmail/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/slashmail)](https://crates.io/crates/slashmail)
+[![MSRV](https://img.shields.io/badge/MSRV-1.83-blue)](https://www.rust-lang.org)
+[![Crate Size](https://img.shields.io/crates/size/slashmail)](https://crates.io/crates/slashmail)
 [![License](https://img.shields.io/crates/l/slashmail)](LICENSE-MIT)
 
-CLI for searching, managing, and bulk-operating on emails via IMAP.
+CLI for searching, managing, drafting, and bulk-operating on emails via IMAP.
 
 ## Install
 
@@ -46,6 +48,8 @@ cp target/release/slashmail ~/.local/bin/   # or anywhere on your PATH
 slashmail [OPTIONS] <COMMAND>
 
 Commands:
+  draft    Save a new unsent email draft
+  reply    Save an unsent reply draft for one message UID
   search   Search messages by criteria
   read     Display the content of matching messages
   delete   Search + delete matching messages (move to Trash)
@@ -64,9 +68,14 @@ Commands:
 --port <PORT>      IMAP port [default: 1143 plain, 993 TLS]
 --tls              Use TLS (required for remote IMAP servers)
 -u, --user <USER>  IMAP username (or SLASHMAIL_USER env)
+--account <NAME>   Use a named account from config
+--all-accounts     Query all configured accounts (read-only commands only)
 ```
 
-Password is read from `SLASHMAIL_PASS` env var or prompted interactively.
+For direct/legacy connections, the password is read from `SLASHMAIL_PASS` env var or prompted interactively.
+For named accounts, set `pass_env` per account or slashmail prompts for that account.
+
+`draft` and `reply` are different because stdin is reserved for the message body: they never prompt for a password. Direct/legacy use requires a nonempty `SLASHMAIL_PASS`. A named account must configure `pass_env`, and the environment variable named there must be nonempty. Slashmail checks credentials before reading stdin, so a missing password cannot consume a piped draft body.
 
 Connection options are global and can appear before or after the subcommand.
 
@@ -80,24 +89,117 @@ Settings can be stored in a config file to avoid repeating connection options:
 | **macOS** | `~/Library/Application Support/slashmail/config.toml` |
 | **Windows** | `%APPDATA%\slashmail\config.toml` |
 
-Example `config.toml`:
+Single-account `config.toml`:
 
 ```toml
 host = "imap.gmail.com"
 port = 993
 tls = true
 user = "user@gmail.com"
+sender = "User Example <user@gmail.com>"
+drafts_folder = "[Gmail]/Drafts"
 trash_folder = "[Gmail]/Trash"
 default_folder = "INBOX"
 ```
 
-All fields are optional. CLI arguments and environment variables take precedence over config values.
+All single-account fields are optional. CLI arguments and environment variables take precedence over these top-level config values.
+
+Multi-account `config.toml`:
+
+```toml
+default_account = "personal"
+
+[[accounts]]
+name = "personal"
+host = "imap.gmail.com"
+port = 993
+tls = true
+user = "user@gmail.com"
+pass_env = "SLASHMAIL_PERSONAL_PASS"
+sender = "Personal User <user@gmail.com>"
+drafts_folder = "[Gmail]/Drafts"
+trash_folder = "[Gmail]/Trash"
+default_folder = "INBOX"
+
+[[accounts]]
+name = "work"
+host = "imap.fastmail.com"
+port = 993
+tls = true
+user = "user@company.com"
+pass_env = "SLASHMAIL_WORK_PASS"
+sender = "Work User <user@company.com>"
+drafts_folder = "Drafts"
+default_folder = "INBOX"
+```
+
+When `[[accounts]]` is configured, slashmail uses `default_account` by default, or the first account if `default_account` is omitted. Use `--account <NAME>` to select one account, or `--all-accounts` to aggregate read-only commands across every account.
+
+`--all-accounts` is supported for `search`, `read`, `count`, `status`, and `quota`. Mutating commands (`delete`, `move`, `mark`) and `export` require a single account.
 
 Use `--config <PATH>` to specify an alternative config file location.
 
+`sender` and `drafts_folder` are optional at both the top level and inside an `[[accounts]]` entry. An account value takes precedence over the top-level value. Draft composition falls back to `user` only when it is a valid email mailbox; configure `sender` when the IMAP login is not an email address.
+
+The draft destination is resolved in this order: command `--drafts-folder`, the selected account's resolved `drafts_folder` (account value, then top-level value), then exactly one selectable server mailbox marked `\Drafts`. Slashmail fails without saving if the chosen override is invalid or server discovery finds zero or multiple valid Drafts mailboxes.
+
+### Email drafts
+
+`draft` and `reply` save an unsent message immediately with the IMAP `\Draft` flag. They do not send mail. The new body comes exclusively from stdin and is plain text unless `--html` is present.
+
+Each `--to`, `--cc`, or `--bcc` occurrence accepts one RFC mailbox. Repeat the flag for multiple recipients; do not combine multiple mailboxes in one comma-separated value because a quoted display name can itself contain a comma.
+
+```bash
+# New plain-text draft
+printf '%s\n' 'Please review the attached proposal.' |
+  slashmail draft --to client@example.com --subject "Proposal"
+
+# Multiple recipients and a named account
+printf '%s\n' 'Here is the project update.' |
+  slashmail draft --account work \
+    --to 'Alice Example <alice@example.com>' \
+    --to bob@example.com \
+    --cc manager@example.com \
+    --bcc archive@example.com \
+    --subject "Project update"
+
+# New HTML draft
+printf '%s\n' '<p>Please review the <strong>proposal</strong>.</p>' |
+  slashmail draft --html --to client@example.com --subject "Proposal"
+
+# Save to an explicit destination instead of configured/server discovery
+printf '%s\n' 'Draft body' |
+  slashmail draft --to client@example.com --drafts-folder "Saved/Drafts"
+
+# Reply to UID 1842 in the account's default folder
+printf '%s\n' 'Thanks, this looks good to me.' |
+  slashmail reply --account work 1842
+
+# Reply to a UID in another source folder and omit the original quote
+printf '%s\n' 'Following up with one correction.' |
+  slashmail reply --account work --folder Archive --no-quote 1842
+
+# HTML reply saved to an explicit Drafts destination
+printf '%s\n' '<p>Thanks, this looks good to me.</p>' |
+  slashmail reply --account work --html \
+    --drafts-folder "Saved/Drafts" 1842
+```
+
+A reply targets exactly one source message by selected account, source `--folder` (or that account's `default_folder`), and UID. Slashmail derives the subject and recipients automatically using reply-all behavior, excludes the configured sender, preserves available thread metadata, and quotes the decoded original by default. Use `--no-quote` to omit that quote. Saving a reply does not mark the source as seen or answered.
+
+Confirmed success prints one stable line with these labeled fields:
+
+```text
+Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc=bob@example.com | Bcc= | Subject=Re: Project update
+```
+
+The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown after a connection loss, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
+
+Draft support intentionally does not include sending, forwarding, attachments, raw MIME, sender aliases, arbitrary headers, editing existing drafts, or aggregate `--all-accounts` creation.
+
 ### Filter options
 
-All commands that operate on messages share the same filter options:
+Search, read, count, and bulk message commands share these filter options:
 
 ```
 -f, --folder <FOLDER>    Folder to search [default: INBOX]
@@ -174,6 +276,13 @@ slashmail count -u user@example.com --json
 
 # Search across all folders
 slashmail search -u user@example.com --all-folders --from "noreply"
+
+# Search across all configured accounts
+slashmail search --all-accounts --from "newsletter"
+slashmail read --all-accounts --subject "invoice" -n 3
+
+# Use one named account from config
+slashmail count --account work --unseen
 
 # Delete with interactive confirmation
 slashmail delete -u user@example.com --from "spam@example.com"
