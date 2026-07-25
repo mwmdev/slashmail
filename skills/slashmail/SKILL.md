@@ -7,7 +7,7 @@ description: "Interact with email via the slashmail IMAP CLI. Use when the user 
 
 Email interaction via the `slashmail` CLI, an IMAP client.
 
-**Prerequisites**: Verify `slashmail` is installed by running `which slashmail`. If not found, install from https://github.com/mwmdev/slashmail (Rust binary — `cargo install slashmail` or download from releases).
+**Prerequisites**: Verify `slashmail` is installed with `command -v slashmail`. If not found, install from https://github.com/mwmdev/slashmail (Rust binary — `cargo install slashmail` or download from releases). Before drafting, run `slashmail draft --help`; before replying, run `slashmail reply --help`. If the required command is unavailable, stop, report that the installed binary is stale, and suggest upgrading from a release or with Cargo. Do not substitute an arbitrary development build.
 
 **Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts can define `pass_env` and can be selected with `--account NAME`; read-only commands can use `--all-accounts`.
 
