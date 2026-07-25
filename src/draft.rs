@@ -54,13 +54,7 @@ pub enum AppendAttempt {
     SavedWithInvalidUidSet,
     PreLiteralFailure,
     Rejected,
-    Indeterminate { phase: IndeterminatePhase },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum IndeterminatePhase {
-    LiteralWrite,
-    Completion,
+    Indeterminate,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -215,7 +209,7 @@ where
         AppendAttempt::Rejected => {
             bail!("Draft was rejected by the server and was not saved")
         }
-        AppendAttempt::Indeterminate { .. } => {
+        AppendAttempt::Indeterminate => {
             let mut recovery = match reconnect() {
                 Ok(session) => session,
                 Err(_) => return Ok(SaveOutcome::Unknown),
@@ -1477,9 +1471,7 @@ Content-Transfer-Encoding: base64\r\n\r\n\
         let draft = composed_for_save();
         let recovered_id = draft.message_id.clone();
         let mut initial = FakeSession {
-            append: Some(AppendAttempt::Indeterminate {
-                phase: IndeterminatePhase::Completion,
-            }),
+            append: Some(AppendAttempt::Indeterminate),
             ..FakeSession::default()
         };
         let outcome = save_composed_draft(
@@ -1505,21 +1497,16 @@ Content-Transfer-Encoding: base64\r\n\r\n\
     #[test]
     fn indeterminate_without_recovery_is_unknown() {
         let draft = composed_for_save();
-        for phase in [
-            IndeterminatePhase::LiteralWrite,
-            IndeterminatePhase::Completion,
-        ] {
-            let mut session = FakeSession {
-                append: Some(AppendAttempt::Indeterminate { phase }),
-                ..FakeSession::default()
-            };
-            assert_eq!(
-                save_composed_draft(&mut session, || bail!("reconnect failed"), "Drafts", &draft)
-                    .unwrap(),
-                SaveOutcome::Unknown
-            );
-            assert_eq!(session.append_count, 1);
-        }
+        let mut session = FakeSession {
+            append: Some(AppendAttempt::Indeterminate),
+            ..FakeSession::default()
+        };
+        assert_eq!(
+            save_composed_draft(&mut session, || bail!("reconnect failed"), "Drafts", &draft)
+                .unwrap(),
+            SaveOutcome::Unknown
+        );
+        assert_eq!(session.append_count, 1);
     }
 
     #[test]

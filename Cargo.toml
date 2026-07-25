@@ -14,7 +14,8 @@ categories = ["command-line-utilities", "email"]
 exclude = [".github/", "CLAUDE.md", "audit.md", "deny.toml", "flake.nix", "flake.lock"]
 
 [dependencies]
-imap = "2.4"
+imap = "=3.0.0-alpha.15"
+imap-proto = "=0.16.7"
 native-tls = "0.2"
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4"
@@ -41,10 +42,6 @@ integration-tests = []
 [dev-dependencies]
 lettre = { version = "=0.11.19", default-features = false, features = ["builder", "smtp-transport", "native-tls"] }
 tempfile = ">=3,<3.25"
-
-[patch.crates-io]
-imap-proto = { path = "patches/imap-proto" }
-imap = { path = "patches/imap" }
 
 [profile.release]
 lto = true
