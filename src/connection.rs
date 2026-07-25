@@ -250,17 +250,27 @@ fn name_attribute_text(attribute: &imap_proto::NameAttribute<'_>) -> String {
 }
 
 fn prepare_append_mailbox(mailbox: &str) -> Result<String> {
-    if mailbox.chars().any(char::is_control) {
-        anyhow::bail!("Drafts folder contains a control character");
+    let mut escaped = String::with_capacity(mailbox.len());
+    for character in mailbox.chars() {
+        match character {
+            character if character.is_control() => {
+                anyhow::bail!("Drafts folder contains a control character");
+            }
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            _ => escaped.push(character),
+        }
     }
-    Ok(mailbox.replace('\\', "\\\\").replace('"', "\\\""))
+    Ok(escaped)
 }
 
 fn single_append_uid(uids: Option<&[imap_proto::UidSetMember]>) -> Result<Option<u32>, ()> {
     match uids {
         None => Ok(None),
-        Some([imap_proto::UidSetMember::Uid(uid)]) => Ok(Some(*uid)),
-        Some([imap_proto::UidSetMember::UidRange(range)]) if range.start() == range.end() => {
+        Some([imap_proto::UidSetMember::Uid(uid)]) if *uid != 0 => Ok(Some(*uid)),
+        Some([imap_proto::UidSetMember::UidRange(range)])
+            if range.start() == range.end() && *range.start() != 0 =>
+        {
             Ok(Some(*range.start()))
         }
         Some(_) => Err(()),
@@ -277,8 +287,65 @@ pub fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn command_tag(command: &str) -> &str {
+        command.split_whitespace().next().unwrap()
+    }
+
+    fn read_command(reader: &mut BufReader<TcpStream>) -> String {
+        let mut command = String::new();
+        reader.read_line(&mut command).unwrap();
+        command
+    }
+
+    fn literal_length(command: &str) -> usize {
+        command
+            .rsplit_once('{')
+            .unwrap()
+            .1
+            .trim_end()
+            .trim_end_matches('}')
+            .parse()
+            .unwrap()
+    }
+
+    fn scripted_session<F>(append_handler: F) -> (ImapSession, thread::JoinHandle<()>)
+    where
+        F: FnOnce(&mut BufReader<TcpStream>, &mut TcpStream) + Send + 'static,
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            stream.write_all(b"* OK scripted IMAP server\r\n").unwrap();
+
+            let login = read_command(&mut reader);
+            assert!(login.contains(" LOGIN "));
+            writeln!(stream, "{} OK logged in\r", command_tag(&login)).unwrap();
+
+            let capability = read_command(&mut reader);
+            assert!(capability.contains(" CAPABILITY"));
+            write!(
+                stream,
+                "* CAPABILITY IMAP4rev1 UIDPLUS\r\n{} OK capabilities\r\n",
+                command_tag(&capability)
+            )
+            .unwrap();
+
+            append_handler(&mut reader, &mut stream);
+        });
+
+        let session = connect("127.0.0.1", port, false, "user", "password").unwrap();
+        (session, server)
+    }
 
     #[test]
     fn is_loopback_ipv4() {
@@ -324,8 +391,68 @@ mod tests {
         assert_eq!(single_append_uid(None), Ok(None));
         assert_eq!(single_append_uid(Some(&[Uid(42)])), Ok(Some(42)));
         assert_eq!(single_append_uid(Some(&[UidRange(42..=42)])), Ok(Some(42)));
+        assert_eq!(single_append_uid(Some(&[Uid(0)])), Err(()));
+        assert_eq!(single_append_uid(Some(&[UidRange(0..=0)])), Err(()));
         assert_eq!(single_append_uid(Some(&[UidRange(42..=43)])), Err(()));
         assert_eq!(single_append_uid(Some(&[Uid(42), Uid(43)])), Err(()));
+    }
+
+    #[test]
+    fn append_rejection_before_literal_is_a_definite_failure() {
+        let (mut session, server) = scripted_session(|reader, stream| {
+            let append = read_command(reader);
+            assert!(append.contains(" APPEND "));
+            writeln!(stream, "{} NO rejected\r", command_tag(&append)).unwrap();
+        });
+
+        assert_eq!(
+            session.append_draft("Drafts", b"body"),
+            AppendAttempt::PreLiteralFailure
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn append_disconnect_after_literal_is_indeterminate() {
+        let (mut session, server) = scripted_session(|reader, stream| {
+            let append = read_command(reader);
+            let length = literal_length(&append);
+            stream.write_all(b"+ continue\r\n").unwrap();
+            let mut literal = vec![0; length + 2];
+            reader.read_exact(&mut literal).unwrap();
+            assert_eq!(&literal[length..], b"\r\n");
+        });
+
+        assert_eq!(
+            session.append_draft("Drafts", b"body"),
+            AppendAttempt::Indeterminate
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn append_escapes_mailbox_on_the_wire_and_accepts_one_uid() {
+        let (mut session, server) = scripted_session(|reader, stream| {
+            let append = read_command(reader);
+            assert!(append.contains(r#" APPEND "Drafts \"2026\"\\saved" (\Draft) {4}"#));
+            let length = literal_length(&append);
+            stream.write_all(b"+ continue\r\n").unwrap();
+            let mut literal = vec![0; length + 2];
+            reader.read_exact(&mut literal).unwrap();
+            assert_eq!(&literal, b"body\r\n");
+            writeln!(
+                stream,
+                "{} OK [APPENDUID 1 42] appended\r",
+                command_tag(&append)
+            )
+            .unwrap();
+        });
+
+        assert_eq!(
+            session.append_draft("Drafts \"2026\"\\saved", b"body"),
+            AppendAttempt::Saved { uid: Some(42) }
+        );
+        server.join().unwrap();
     }
 
     #[test]
