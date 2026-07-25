@@ -31,6 +31,9 @@ cargo build --release
 cp target/release/slashmail ~/.local/bin/   # or anywhere on your PATH
 ```
 
+If OpenSSL cannot be discovered on your system, build with
+`cargo build --release --features vendored-openssl`.
+
 #### Platform notes
 
 | OS | Prerequisites |
@@ -193,7 +196,7 @@ Confirmed success prints one stable line with these labeled fields:
 Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc=bob@example.com | Bcc= | Subject=Re: Project update
 ```
 
-The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown after a connection loss, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
+The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
 
 Draft support intentionally does not include sending, forwarding, attachments, raw MIME, sender aliases, arbitrary headers, editing existing drafts, or aggregate `--all-accounts` creation.
 
@@ -347,6 +350,13 @@ mkdir -p ~/.claude/skills/slashmail
 cp skills/slashmail/SKILL.md ~/.claude/skills/slashmail/
 ```
 
+**Codex** — copy the skill into the shared agent skills directory:
+
+```bash
+mkdir -p ~/.agents/skills/slashmail
+cp skills/slashmail/SKILL.md ~/.agents/skills/slashmail/
+```
+
 **Other agents** — paste the contents of `skills/slashmail/SKILL.md` into your agent's system prompt or tool definitions.
 
 Once installed, prompts like these just work:
@@ -361,9 +371,51 @@ Once installed, prompts like these just work:
 > Move flagged emails from last week to the Archive folder
 > Export all invoices from 2025 to a backup folder
 > Search my sent folder for emails to the finance team
+> Draft a plain-text email to Sarah with subject "Project update"
+> Save an HTML reply to message UID 1842 without quoting the original
 ```
 
 Destructive operations always dry-run first and ask for confirmation.
+
+## Releasing
+
+Releases are tag-driven. The release workflow validates that the tag matches
+the crate version, builds five platform archives, publishes to crates.io, and
+only then creates the GitHub release.
+
+1. Update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md` in a release-preparation
+   pull request.
+2. Run the same publishability checks used by CI:
+
+   ```bash
+   cargo test --locked --features vendored-openssl
+   cargo package --locked --features vendored-openssl
+   cargo publish --dry-run --locked --features vendored-openssl
+   ```
+
+3. Merge the pull request only after CI passes.
+4. Tag the exact merged `origin/main` commit and push the tag:
+
+   ```bash
+   VERSION=0.5.0
+   git fetch origin main --tags
+   git show origin/main:Cargo.toml | grep "^version = \"${VERSION}\"$"
+   git tag "v${VERSION}" origin/main
+   git push origin "v${VERSION}"
+   ```
+
+5. Watch the `Release` workflow and verify the GitHub release has all five
+   archives and crates.io lists the new version:
+
+   ```bash
+   run_id="$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
+   gh run watch "${run_id}" --exit-status
+   gh release view "v${VERSION}"
+   cargo info "slashmail@${VERSION}"
+   ```
+
+The repository must have a valid `CARGO_REGISTRY_TOKEN` Actions secret. Never
+push the release tag before the release-preparation commit is on `main`.
 
 ## Tested with
 

@@ -30,35 +30,8 @@ jobs:
       - run: cargo clippy -- -D warnings
       - run: cargo test
 
-      - name: Check vendored IMAP protocol crate
-        env:
-          RUSTFLAGS: -A mismatched-lifetime-syntaxes -A clippy::redundant-closure
-        run: |
-          cargo fmt --manifest-path patches/imap-proto/Cargo.toml -- --check
-          cargo clippy --manifest-path patches/imap-proto/Cargo.toml -- -D warnings
-          cargo test --manifest-path patches/imap-proto/Cargo.toml
-
-      - name: Check vendored IMAP client crate
-        env:
-          # Keep upstream rust-imap 2.4 lint debt isolated while denying new warnings.
-          RUSTFLAGS: >-
-            -A mismatched-lifetime-syntaxes
-            -A clippy::redundant-closure
-            -A clippy::single-component-path-imports
-            -A clippy::redundant-slicing
-            -A clippy::write-literal
-            -A clippy::derivable-impls
-            -A clippy::manual-ok-err
-            -A clippy::manual-pattern-char-comparison
-            -A clippy::needless-borrows-for-generic-args
-            -A clippy::doc-overindented-list-items
-            -A clippy::print-with-newline
-            -A clippy::extra-unused-lifetimes
-            -A clippy::manual-non-exhaustive
-        run: |
-          cargo fmt --manifest-path patches/imap/Cargo.toml -- --check
-          cargo clippy --manifest-path patches/imap/Cargo.toml -- -D warnings
-          cargo test --manifest-path patches/imap/Cargo.toml
+      - name: Verify publishable crate
+        run: cargo package --locked --features vendored-openssl
 
       - name: Install cargo-deny
         uses: taiki-e/install-action@v2

@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-25
+
 ### Added
 
 - `draft` command for saving plain-text or HTML new-message drafts with structured To, Cc, Bcc, and subject fields
@@ -14,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Optional top-level and per-account `sender` and `drafts_folder` configuration
 - Draft destination discovery through the server-designated selectable `\Drafts` mailbox, with `--drafts-folder` override
 - Stable saved-draft receipt containing account, folder, UID, recipients, and subject
+- Multiple named accounts through `[[accounts]]`, with `default_account`,
+  `--account`, and read-only `--all-accounts` selection
 
 ### Security
 
@@ -106,6 +110,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
+[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/mwmdev/slashmail/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.4.0
 [0.3.2]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.2
 [0.3.1]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.1
 [0.3.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.0

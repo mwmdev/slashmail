@@ -3,7 +3,6 @@ name: Release
 on:
   push:
     tags: ["v*"]
-  workflow_dispatch:
 
 permissions:
   contents: read
@@ -12,7 +11,28 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  preflight:
+    name: Verify release metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - name: Verify tag matches crate version
+        shell: bash
+        run: |
+          crate_version="$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[0].version')"
+          expected_tag="v${crate_version}"
+          if [[ "${GITHUB_REF_NAME}" != "${expected_tag}" ]]; then
+            echo "::error::Tag ${GITHUB_REF_NAME} does not match crate version ${crate_version}"
+            exit 1
+          fi
+      - name: Verify crates.io package
+        run: cargo publish --dry-run --locked --features vendored-openssl
+
   build:
+    needs: preflight
     strategy:
       fail-fast: false
       matrix:
@@ -82,10 +102,8 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.artifact }}
-
-
   release:
-    needs: build
+    needs: publish
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -112,6 +130,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: cargo publish
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y pkg-config libssl-dev
+      - run: cargo publish --locked
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}

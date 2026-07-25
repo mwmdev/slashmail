@@ -199,7 +199,7 @@ fn only_message_in(session: &mut ImapSession, folder: &str) -> (u32, Vec<u8>, Ve
         .uid_fetch(&uid.to_string(), "(UID FLAGS BODY.PEEK[])")
         .unwrap();
     assert_eq!(fetches.len(), 1);
-    let fetch = &fetches[0];
+    let fetch = fetches.get(0).unwrap();
     (
         uid,
         fetch.body().unwrap().to_vec(),

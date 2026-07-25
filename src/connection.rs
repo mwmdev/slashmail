@@ -1,6 +1,4 @@
-use crate::draft::{
-    AppendAttempt, DraftMailboxSession, HeaderFetch, IndeterminatePhase, MailboxListing,
-};
+use crate::draft::{AppendAttempt, DraftMailboxSession, HeaderFetch, MailboxListing};
 use crate::search;
 use anyhow::{Context, Result};
 use imap::Session;
@@ -30,7 +28,7 @@ impl ImapSession {
         &mut self,
         reference: Option<&str>,
         pattern: Option<&str>,
-    ) -> imap::error::Result<imap::types::ZeroCopy<Vec<imap::types::Name>>> {
+    ) -> imap::error::Result<imap::types::Names> {
         match &mut self.inner {
             Inner::Plain(s) => s.list(reference, pattern),
             Inner::Tls(s) => s.list(reference, pattern),
@@ -72,22 +70,10 @@ impl ImapSession {
         &mut self,
         uid_set: &str,
         query: &str,
-    ) -> imap::error::Result<imap::types::ZeroCopy<Vec<imap::types::Fetch>>> {
+    ) -> imap::error::Result<imap::types::Fetches> {
         match &mut self.inner {
             Inner::Plain(s) => s.uid_fetch(uid_set, query),
             Inner::Tls(s) => s.uid_fetch(uid_set, query),
-        }
-    }
-
-    pub fn append_with_flags_result(
-        &mut self,
-        mailbox: &str,
-        content: &[u8],
-        flags: &[imap::types::Flag<'_>],
-    ) -> imap::types::AppendResult {
-        match &mut self.inner {
-            Inner::Plain(s) => s.append_with_flags_result(mailbox, content, flags),
-            Inner::Tls(s) => s.append_with_flags_result(mailbox, content, flags),
         }
     }
 
@@ -188,24 +174,29 @@ impl DraftMailboxSession for ImapSession {
     }
 
     fn append_draft(&mut self, folder: &str, bytes: &[u8]) -> AppendAttempt {
-        use imap::types::AppendError;
+        let mailbox = match prepare_append_mailbox(folder) {
+            Ok(mailbox) => mailbox,
+            Err(_) => return AppendAttempt::PreLiteralFailure,
+        };
+        let result = match &mut self.inner {
+            Inner::Plain(session) => session
+                .append(&mailbox, bytes)
+                .flag(imap::types::Flag::Draft)
+                .finish(),
+            Inner::Tls(session) => session
+                .append(&mailbox, bytes)
+                .flag(imap::types::Flag::Draft)
+                .finish(),
+        };
 
-        match self.append_with_flags_result(folder, bytes, &[imap::types::Flag::Draft]) {
-            Ok(completion) => AppendAttempt::Saved {
-                uid: completion.uid.map(|identity| identity.uid),
+        match result {
+            Ok(appended) => match single_append_uid(appended.uids.as_deref()) {
+                Ok(uid) => AppendAttempt::Saved { uid },
+                Err(()) => AppendAttempt::SavedWithInvalidUidSet,
             },
-            Err(AppendError::InvalidUidSet { .. }) => AppendAttempt::SavedWithInvalidUidSet,
-            Err(AppendError::PreLiteral(_)) => AppendAttempt::PreLiteralFailure,
-            Err(AppendError::Rejected { .. }) => AppendAttempt::Rejected,
-            Err(AppendError::Indeterminate { phase, .. }) => match phase {
-                imap::types::AppendPhase::BeforeLiteral => AppendAttempt::PreLiteralFailure,
-                imap::types::AppendPhase::LiteralWrite => AppendAttempt::Indeterminate {
-                    phase: IndeterminatePhase::LiteralWrite,
-                },
-                imap::types::AppendPhase::Completion => AppendAttempt::Indeterminate {
-                    phase: IndeterminatePhase::Completion,
-                },
-            },
+            Err(imap::error::Error::Append) => AppendAttempt::PreLiteralFailure,
+            Err(imap::error::Error::No(_) | imap::error::Error::Bad(_)) => AppendAttempt::Rejected,
+            Err(_) => AppendAttempt::Indeterminate,
         }
     }
 
@@ -240,13 +231,49 @@ impl DraftMailboxSession for ImapSession {
     }
 }
 
-fn name_attribute_text(attribute: &imap::types::NameAttribute<'_>) -> String {
+fn name_attribute_text(attribute: &imap_proto::NameAttribute<'_>) -> String {
     match attribute {
-        imap::types::NameAttribute::NoInferiors => "\\Noinferiors".to_string(),
-        imap::types::NameAttribute::NoSelect => "\\Noselect".to_string(),
-        imap::types::NameAttribute::Marked => "\\Marked".to_string(),
-        imap::types::NameAttribute::Unmarked => "\\Unmarked".to_string(),
-        imap::types::NameAttribute::Custom(value) => value.to_string(),
+        imap_proto::NameAttribute::NoInferiors => "\\Noinferiors".to_string(),
+        imap_proto::NameAttribute::NoSelect => "\\Noselect".to_string(),
+        imap_proto::NameAttribute::Marked => "\\Marked".to_string(),
+        imap_proto::NameAttribute::Unmarked => "\\Unmarked".to_string(),
+        imap_proto::NameAttribute::All => "\\All".to_string(),
+        imap_proto::NameAttribute::Archive => "\\Archive".to_string(),
+        imap_proto::NameAttribute::Drafts => "\\Drafts".to_string(),
+        imap_proto::NameAttribute::Flagged => "\\Flagged".to_string(),
+        imap_proto::NameAttribute::Junk => "\\Junk".to_string(),
+        imap_proto::NameAttribute::Sent => "\\Sent".to_string(),
+        imap_proto::NameAttribute::Trash => "\\Trash".to_string(),
+        imap_proto::NameAttribute::Extension(value) => value.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn prepare_append_mailbox(mailbox: &str) -> Result<String> {
+    let mut escaped = String::with_capacity(mailbox.len());
+    for character in mailbox.chars() {
+        match character {
+            character if character.is_control() => {
+                anyhow::bail!("Drafts folder contains a control character");
+            }
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            _ => escaped.push(character),
+        }
+    }
+    Ok(escaped)
+}
+
+fn single_append_uid(uids: Option<&[imap_proto::UidSetMember]>) -> Result<Option<u32>, ()> {
+    match uids {
+        None => Ok(None),
+        Some([imap_proto::UidSetMember::Uid(uid)]) if *uid != 0 => Ok(Some(*uid)),
+        Some([imap_proto::UidSetMember::UidRange(range)])
+            if range.start() == range.end() && *range.start() != 0 =>
+        {
+            Ok(Some(*range.start()))
+        }
+        Some(_) => Err(()),
     }
 }
 
@@ -260,8 +287,65 @@ pub fn is_loopback_host(host: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::TcpListener;
     use std::thread;
+
+    fn command_tag(command: &str) -> &str {
+        command.split_whitespace().next().unwrap()
+    }
+
+    fn read_command(reader: &mut BufReader<TcpStream>) -> String {
+        let mut command = String::new();
+        reader.read_line(&mut command).unwrap();
+        command
+    }
+
+    fn literal_length(command: &str) -> usize {
+        command
+            .rsplit_once('{')
+            .unwrap()
+            .1
+            .trim_end()
+            .trim_end_matches('}')
+            .parse()
+            .unwrap()
+    }
+
+    fn scripted_session<F>(append_handler: F) -> (ImapSession, thread::JoinHandle<()>)
+    where
+        F: FnOnce(&mut BufReader<TcpStream>, &mut TcpStream) + Send + 'static,
+    {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+
+            stream.write_all(b"* OK scripted IMAP server\r\n").unwrap();
+
+            let login = read_command(&mut reader);
+            assert!(login.contains(" LOGIN "));
+            writeln!(stream, "{} OK logged in\r", command_tag(&login)).unwrap();
+
+            let capability = read_command(&mut reader);
+            assert!(capability.contains(" CAPABILITY"));
+            write!(
+                stream,
+                "* CAPABILITY IMAP4rev1 UIDPLUS\r\n{} OK capabilities\r\n",
+                command_tag(&capability)
+            )
+            .unwrap();
+
+            append_handler(&mut reader, &mut stream);
+        });
+
+        let session = connect("127.0.0.1", port, false, "user", "password").unwrap();
+        (session, server)
+    }
 
     #[test]
     fn is_loopback_ipv4() {
@@ -283,6 +367,104 @@ mod tests {
     #[test]
     fn is_loopback_remote_host() {
         assert!(!is_loopback_host("example.com"));
+    }
+
+    #[test]
+    fn append_mailbox_is_escaped_for_the_upstream_builder() {
+        assert_eq!(
+            prepare_append_mailbox("Drafts \"2026\"\\saved").unwrap(),
+            "Drafts \\\"2026\\\"\\\\saved"
+        );
+    }
+
+    #[test]
+    fn append_mailbox_rejects_controls() {
+        for mailbox in ["Drafts\nInjected", "Drafts\rInjected", "Drafts\0Injected"] {
+            assert!(prepare_append_mailbox(mailbox).is_err());
+        }
+    }
+
+    #[test]
+    fn appenduid_requires_exactly_one_uid() {
+        use imap_proto::UidSetMember::{Uid, UidRange};
+
+        assert_eq!(single_append_uid(None), Ok(None));
+        assert_eq!(single_append_uid(Some(&[Uid(42)])), Ok(Some(42)));
+        assert_eq!(single_append_uid(Some(&[UidRange(42..=42)])), Ok(Some(42)));
+        assert_eq!(single_append_uid(Some(&[Uid(0)])), Err(()));
+        assert_eq!(single_append_uid(Some(&[UidRange(0..=0)])), Err(()));
+        assert_eq!(single_append_uid(Some(&[UidRange(42..=43)])), Err(()));
+        assert_eq!(single_append_uid(Some(&[Uid(42), Uid(43)])), Err(()));
+    }
+
+    #[test]
+    fn append_rejection_before_literal_is_a_definite_failure() {
+        let (mut session, server) = scripted_session(|reader, stream| {
+            let append = read_command(reader);
+            assert!(append.contains(" APPEND "));
+            writeln!(stream, "{} NO rejected\r", command_tag(&append)).unwrap();
+        });
+
+        assert_eq!(
+            session.append_draft("Drafts", b"body"),
+            AppendAttempt::PreLiteralFailure
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn append_disconnect_after_literal_is_indeterminate() {
+        let (mut session, server) = scripted_session(|reader, stream| {
+            let append = read_command(reader);
+            let length = literal_length(&append);
+            stream.write_all(b"+ continue\r\n").unwrap();
+            let mut literal = vec![0; length + 2];
+            reader.read_exact(&mut literal).unwrap();
+            assert_eq!(&literal[length..], b"\r\n");
+        });
+
+        assert_eq!(
+            session.append_draft("Drafts", b"body"),
+            AppendAttempt::Indeterminate
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn append_escapes_mailbox_on_the_wire_and_accepts_one_uid() {
+        let (mut session, server) = scripted_session(|reader, stream| {
+            let append = read_command(reader);
+            assert!(append.contains(r#" APPEND "Drafts \"2026\"\\saved" (\Draft) {4}"#));
+            let length = literal_length(&append);
+            stream.write_all(b"+ continue\r\n").unwrap();
+            let mut literal = vec![0; length + 2];
+            reader.read_exact(&mut literal).unwrap();
+            assert_eq!(&literal, b"body\r\n");
+            writeln!(
+                stream,
+                "{} OK [APPENDUID 1 42] appended\r",
+                command_tag(&append)
+            )
+            .unwrap();
+        });
+
+        assert_eq!(
+            session.append_draft("Drafts \"2026\"\\saved", b"body"),
+            AppendAttempt::Saved { uid: Some(42) }
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn special_use_attributes_keep_drafts_discovery_working() {
+        assert_eq!(
+            name_attribute_text(&imap_proto::NameAttribute::Drafts),
+            "\\Drafts"
+        );
+        assert_eq!(
+            name_attribute_text(&imap_proto::NameAttribute::NoSelect),
+            "\\Noselect"
+        );
     }
 
     #[test]
@@ -345,7 +527,10 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
     } else {
         let tcp = connect_tcp(host, port, IMAP_CONNECT_TIMEOUT, IMAP_IO_TIMEOUT)
             .with_context(|| format!("Failed to connect to {host}:{port}"))?;
-        let client = imap::Client::new(tcp);
+        let mut client = imap::Client::new(tcp);
+        client
+            .read_greeting()
+            .context("Failed to read the IMAP greeting")?;
         let s = client
             .login(user, pass)
             .map_err(|e| e.0)
