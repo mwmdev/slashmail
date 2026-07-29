@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use anyhow::{anyhow, bail, Context, Result};
 use lettre::message::{
-    header, Attachment, Mailbox, Message, MessageBuilder, MultiPart, SinglePart,
+    header, Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart,
 };
 use mailparse::{addrparse_header, MailAddr, MailHeader, MailHeaderMap, ParsedMail};
 
@@ -441,15 +441,15 @@ fn build_message(input: MessageInput) -> Result<ComposedDraft> {
     let message = if attachments.is_empty() {
         builder.singlepart(part)
     } else {
-        let multipart = attachments.into_iter().fold(
-            MultiPart::mixed().singlepart(part),
-            |multipart, attachment| {
-                multipart.singlepart(
-                    Attachment::new(attachment.filename)
-                        .body(attachment.bytes, attachment.content_type),
-                )
-            },
-        );
+        let mut multipart = MultiPart::mixed().singlepart(part);
+        for attachment in attachments {
+            let body =
+                Body::new_with_encoding(attachment.bytes, header::ContentTransferEncoding::Base64)
+                    .map_err(|_| anyhow!("Failed to encode attachment body"))?;
+            multipart = multipart.singlepart(
+                Attachment::new(attachment.filename).body(body, attachment.content_type),
+            );
+        }
         builder.multipart(multipart)
     }
     .context("Failed to build draft message")?;
@@ -1020,6 +1020,10 @@ mod tests {
                 Some(filename)
             );
             assert_eq!(part.ctype.mimetype, content_type);
+            assert_eq!(
+                header_value(part, "Content-Transfer-Encoding").as_deref(),
+                Some("base64")
+            );
             assert_eq!(part.get_body_raw().unwrap(), bytes);
         }
     }

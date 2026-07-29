@@ -8,6 +8,7 @@ use std::time::Duration;
 use std::{path::Path, process::Command};
 
 use lettre::message::header::ContentType;
+use lettre::message::{Attachment, MultiPart, SinglePart};
 use lettre::transport::smtp::client::Tls;
 use lettre::{Message, SmtpTransport, Transport};
 use mailparse::MailHeaderMap;
@@ -76,6 +77,41 @@ fn send_email_with_cc(from: &str, to: &str, cc: &str, subject: &str, body: &str)
         .message_id(None)
         .header(ContentType::TEXT_PLAIN)
         .body(body.to_string())
+        .unwrap();
+
+    let mailer = SmtpTransport::builder_dangerous("127.0.0.1")
+        .port(smtp_port())
+        .tls(Tls::None)
+        .build();
+
+    mailer.send(&email).unwrap();
+}
+
+fn send_email_with_cc_and_attachment(
+    from: &str,
+    to: &str,
+    cc: &str,
+    subject: &str,
+    body: &str,
+    filename: &str,
+    bytes: &[u8],
+) {
+    let to_addr = user_email(to);
+    let cc_addr = user_email(cc);
+    let email = Message::builder()
+        .from(from.parse().unwrap())
+        .to(to_addr.parse().unwrap())
+        .cc(cc_addr.parse().unwrap())
+        .subject(subject)
+        .message_id(None)
+        .multipart(
+            MultiPart::mixed()
+                .singlepart(SinglePart::plain(body.to_string()))
+                .singlepart(Attachment::new(filename.to_string()).body(
+                    bytes.to_vec(),
+                    ContentType::parse("application/octet-stream").unwrap(),
+                )),
+        )
         .unwrap();
 
     let mailer = SmtpTransport::builder_dangerous("127.0.0.1")
@@ -367,6 +403,103 @@ fn cli_saves_html_draft_as_html_without_delivery() {
 }
 
 #[test]
+fn cli_saves_draft_with_ordered_attachments_without_delivery() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.logout().unwrap();
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let binary_path = tmp.path().join("résumé.bin");
+    let empty_path = tmp.path().join("empty.unknownext");
+    let binary_bytes = b"\0binary\xffpayload\x80";
+    std::fs::write(&binary_path, binary_bytes).unwrap();
+    std::fs::write(&empty_path, []).unwrap();
+
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command
+        .args([
+            "--account",
+            "personal",
+            "draft",
+            "--to",
+            &user_email(&recipient),
+            "--subject",
+            "Stored attached draft",
+            "--attach",
+        ])
+        .arg(&binary_path)
+        .arg("--attach")
+        .arg(&empty_path)
+        .args(["--drafts-folder", "Drafts"]);
+    let output = output_with_stdin(command, "Body before attachments");
+    let stdout = assert_cmd_success(output);
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(stdout.starts_with("Draft saved: Account=personal | Folder=Drafts | UID="));
+    assert!(stdout.contains("Subject=Stored attached draft"));
+    assert!(!stdout.contains("résumé.bin"));
+    assert!(!stdout.contains("empty.unknownext"));
+
+    let mut owner_session = imap_connect(&owner);
+    let (_, raw, flags) = only_message_in(&mut owner_session, "Drafts");
+    assert!(flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    assert_eq!(parsed.ctype.mimetype, "multipart/mixed");
+    assert_eq!(parsed.subparts.len(), 3);
+
+    let body = &parsed.subparts[0];
+    assert_eq!(body.ctype.mimetype, "text/plain");
+    assert_eq!(
+        body.get_body().unwrap().trim_end(),
+        "Body before attachments"
+    );
+
+    let binary = &parsed.subparts[1];
+    let binary_disposition = binary.get_content_disposition();
+    assert_eq!(
+        binary_disposition.disposition,
+        mailparse::DispositionType::Attachment
+    );
+    assert_eq!(
+        binary_disposition
+            .params
+            .get("filename")
+            .map(String::as_str),
+        Some("résumé.bin")
+    );
+    assert_eq!(binary.ctype.mimetype, "application/octet-stream");
+    assert_eq!(binary.get_body_raw().unwrap(), binary_bytes);
+
+    let empty = &parsed.subparts[2];
+    let empty_disposition = empty.get_content_disposition();
+    assert_eq!(
+        empty_disposition.disposition,
+        mailparse::DispositionType::Attachment
+    );
+    assert_eq!(
+        empty_disposition.params.get("filename").map(String::as_str),
+        Some("empty.unknownext")
+    );
+    assert_eq!(empty.ctype.mimetype, "application/octet-stream");
+    assert_eq!(empty.get_body_raw().unwrap(), Vec::<u8>::new());
+    owner_session.logout().unwrap();
+
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.select("INBOX").unwrap();
+    assert!(
+        recipient_session.uid_search("ALL").unwrap().is_empty(),
+        "APPEND must not deliver an attached draft"
+    );
+    recipient_session.logout().unwrap();
+}
+
+#[test]
 fn cli_saves_threaded_reply_without_changing_source_state_or_sending() {
     let owner = unique_user();
     let sender = unique_user();
@@ -446,6 +579,178 @@ fn cli_saves_threaded_reply_without_changing_source_state_or_sending() {
         "saving a reply draft must not deliver it"
     );
     sender_session.logout().unwrap();
+}
+
+#[test]
+fn cli_saves_attached_reply_without_copying_source_attachments_or_changing_source() {
+    let owner = unique_user();
+    let sender = unique_user();
+    let cc = unique_user();
+    let sender_email = user_email(&sender);
+    let mut sender_session = imap_connect(&sender);
+    sender_session.logout().unwrap();
+    let mut cc_session = imap_connect(&cc);
+    cc_session.logout().unwrap();
+    send_email_with_cc_and_attachment(
+        &sender_email,
+        &owner,
+        &cc,
+        "Attached thread",
+        "Original attached body",
+        "source-secret.bin",
+        b"source attachment bytes",
+    );
+    sleep_for_delivery();
+    create_drafts_folder(&owner);
+
+    let mut owner_session = imap_connect(&owner);
+    let (source_uid, source_raw, source_flags) = only_message_in(&mut owner_session, "INBOX");
+    assert!(!source_flags.iter().any(|flag| {
+        flag.eq_ignore_ascii_case("\\Seen") || flag.eq_ignore_ascii_case("\\Answered")
+    }));
+    let source = mailparse::parse_mail(&source_raw).unwrap();
+    let source_message_id = source.headers.get_first_value("Message-ID").unwrap();
+    assert_eq!(source.subparts.len(), 2);
+    owner_session.logout().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let explicit_path = tmp.path().join("reply-note.txt");
+    let explicit_bytes = b"explicit reply attachment";
+    std::fs::write(&explicit_path, explicit_bytes).unwrap();
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command
+        .args([
+            "--account",
+            "personal",
+            "reply",
+            &source_uid.to_string(),
+            "--folder",
+            "INBOX",
+            "--attach",
+        ])
+        .arg(&explicit_path)
+        .args(["--drafts-folder", "Drafts"]);
+    let output = output_with_stdin(command, "My attached reply");
+    let stdout = assert_cmd_success(output);
+    assert_eq!(stdout.lines().count(), 1);
+    assert!(stdout.starts_with("Draft saved: Account=personal | Folder=Drafts | UID="));
+    assert!(stdout.contains("Subject=Re: Attached thread"));
+    assert!(!stdout.contains("reply-note.txt"));
+
+    let mut owner_session = imap_connect(&owner);
+    let (_, reply_raw, reply_flags) = only_message_in(&mut owner_session, "Drafts");
+    assert!(reply_flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Draft")));
+    let reply = mailparse::parse_mail(&reply_raw).unwrap();
+    assert_eq!(reply.ctype.mimetype, "multipart/mixed");
+    assert_eq!(
+        reply.headers.get_first_value("In-Reply-To").as_deref(),
+        Some(source_message_id.as_str())
+    );
+    assert!(reply
+        .headers
+        .get_first_value("To")
+        .unwrap()
+        .contains(&sender_email));
+    assert!(reply
+        .headers
+        .get_first_value("Cc")
+        .unwrap()
+        .contains(&user_email(&cc)));
+    assert_eq!(reply.subparts.len(), 2);
+    let reply_body = reply.subparts[0].get_body().unwrap();
+    assert!(reply_body.contains("My attached reply"));
+    assert!(reply_body.contains("> Original attached body"));
+    assert!(!reply_body.contains("source attachment bytes"));
+
+    let explicit = &reply.subparts[1];
+    let disposition = explicit.get_content_disposition();
+    assert_eq!(
+        disposition.disposition,
+        mailparse::DispositionType::Attachment
+    );
+    assert_eq!(
+        disposition.params.get("filename").map(String::as_str),
+        Some("reply-note.txt")
+    );
+    assert_eq!(explicit.ctype.mimetype, "text/plain");
+    assert_eq!(explicit.get_body_raw().unwrap(), explicit_bytes);
+    assert!(!reply_raw
+        .windows("source-secret.bin".len())
+        .any(|window| window == b"source-secret.bin"));
+
+    let (same_uid, _, source_flags_after) = only_message_in(&mut owner_session, "INBOX");
+    assert_eq!(same_uid, source_uid);
+    assert!(!source_flags_after.iter().any(|flag| {
+        flag.eq_ignore_ascii_case("\\Seen") || flag.eq_ignore_ascii_case("\\Answered")
+    }));
+    owner_session.logout().unwrap();
+
+    let mut sender_session = imap_connect(&sender);
+    sender_session.select("INBOX").unwrap();
+    assert!(
+        sender_session.uid_search("ALL").unwrap().is_empty(),
+        "saving an attached reply draft must not deliver it to the sender"
+    );
+    sender_session.logout().unwrap();
+
+    let mut cc_session = imap_connect(&cc);
+    cc_session.select("INBOX").unwrap();
+    assert_eq!(
+        cc_session.uid_search("ALL").unwrap().len(),
+        1,
+        "saving an attached reply draft must not deliver another message to Cc"
+    );
+    cc_session.logout().unwrap();
+}
+
+#[test]
+fn cli_rejects_invalid_local_attachments_without_creating_drafts() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let missing = tmp.path().join("missing.bin");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    for invalid_path in [&missing, tmp.path()] {
+        let mut command = slashmail_cmd(&config, &accounts);
+        command
+            .args([
+                "--account",
+                "personal",
+                "draft",
+                "--to",
+                &user_email(&recipient),
+                "--attach",
+            ])
+            .arg(invalid_path)
+            .args(["--drafts-folder", "Drafts"])
+            .stdin(Stdio::null());
+        let output = command.output().unwrap();
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("attachment") || stderr.contains("Attachment"),
+            "expected a contextual attachment error, got: {stderr}"
+        );
+
+        let mut owner_session = imap_connect(&owner);
+        owner_session.select("Drafts").unwrap();
+        assert!(
+            owner_session.uid_search("ALL").unwrap().is_empty(),
+            "invalid local attachment must not create a draft"
+        );
+        owner_session.logout().unwrap();
+    }
 }
 
 #[test]
