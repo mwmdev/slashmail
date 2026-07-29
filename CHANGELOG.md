@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Repeatable `--attach PATH` support for new-message and reply drafts, with explicit local-file preflight, body-first MIME attachments, Unicode basenames, and unchanged unsent-draft receipts
+
 ## [0.5.0] - 2026-07-25
 
 ### Added
