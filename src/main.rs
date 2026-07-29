@@ -522,17 +522,22 @@ fn load_attachments(paths: &[PathBuf]) -> Result<Vec<draft::DraftAttachment>> {
 }
 
 fn load_attachment(path: &Path) -> Result<draft::DraftAttachment> {
-    let safe_path = safe_attachment_path(path);
     let filename = path
         .file_name()
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .ok_or_else(|| {
-            anyhow::anyhow!("Attachment path {safe_path} has no valid Unicode basename")
+            anyhow::anyhow!(
+                "Attachment path {} has no valid Unicode basename",
+                safe_attachment_path(path)
+            )
         })?
         .to_string();
     if filename.chars().any(disallowed_attachment_name_character) {
-        bail!("Attachment path {safe_path} has a disallowed basename");
+        bail!(
+            "Attachment path {} has a disallowed basename",
+            safe_attachment_path(path)
+        );
     }
 
     let mut options = OpenOptions::new();
@@ -541,14 +546,20 @@ fn load_attachment(path: &Path) -> Result<draft::DraftAttachment> {
     options.custom_flags(libc::O_NONBLOCK);
     let mut file = options
         .open(path)
-        .with_context(|| format!("Failed to open attachment {safe_path}"))?;
-    let metadata = file
-        .metadata()
-        .with_context(|| format!("Failed to inspect attachment {safe_path}"))?;
+        .with_context(|| format!("Failed to open attachment {}", safe_attachment_path(path)))?;
+    let metadata = file.metadata().with_context(|| {
+        format!(
+            "Failed to inspect attachment {}",
+            safe_attachment_path(path)
+        )
+    })?;
     if !metadata.file_type().is_file() {
-        bail!("Attachment path {safe_path} is not a regular file");
+        bail!(
+            "Attachment path {} is not a regular file",
+            safe_attachment_path(path)
+        );
     }
-    let bytes = read_attachment_bytes(&mut file, &safe_path)?;
+    let bytes = read_attachment_bytes(&mut file, path)?;
     let content_type = mime_guess::from_ext(
         path.extension()
             .and_then(|extension| extension.to_str())
@@ -564,7 +575,7 @@ fn load_attachment(path: &Path) -> Result<draft::DraftAttachment> {
     })
 }
 
-fn read_attachment_bytes(file: &mut File, safe_path: &str) -> Result<Vec<u8>> {
+fn read_attachment_bytes(file: &mut File, path: &Path) -> Result<Vec<u8>> {
     let mut bytes = Vec::new();
     let mut buffer = [0_u8; 64 * 1024];
     loop {
@@ -572,16 +583,20 @@ fn read_attachment_bytes(file: &mut File, safe_path: &str) -> Result<Vec<u8>> {
             Ok(read) => read,
             Err(error) if error.kind() == ErrorKind::Interrupted => continue,
             Err(error) => {
-                return Err(error)
-                    .with_context(|| format!("Failed to read attachment {safe_path}"));
+                return Err(error).with_context(|| {
+                    format!("Failed to read attachment {}", safe_attachment_path(path))
+                });
             }
         };
         if read == 0 {
             return Ok(bytes);
         }
-        bytes
-            .try_reserve_exact(read)
-            .with_context(|| format!("Failed to allocate memory for attachment {safe_path}"))?;
+        bytes.try_reserve(read).with_context(|| {
+            format!(
+                "Failed to allocate memory for attachment {}",
+                safe_attachment_path(path)
+            )
+        })?;
         bytes.extend_from_slice(&buffer[..read]);
     }
 }

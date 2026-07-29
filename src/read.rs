@@ -307,7 +307,7 @@ fn collect_attachments(part: &mailparse::ParsedMail, attachments: &mut Vec<Strin
 }
 
 fn is_attachment(part: &mailparse::ParsedMail) -> bool {
-    attachment_name(part).is_some()
+    part.get_content_disposition().disposition == DispositionType::Attachment
 }
 
 fn attachment_name(part: &mailparse::ParsedMail) -> Option<String> {

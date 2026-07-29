@@ -58,12 +58,7 @@ fn send_email_from(from: &str, to: &str, subject: &str, body: &str) {
         .body(body.to_string())
         .unwrap();
 
-    let mailer = SmtpTransport::builder_dangerous("127.0.0.1")
-        .port(smtp_port())
-        .tls(Tls::None)
-        .build();
-
-    mailer.send(&email).unwrap();
+    send_test_message(&email);
 }
 
 fn send_email_with_cc(from: &str, to: &str, cc: &str, subject: &str, body: &str) {
@@ -79,12 +74,7 @@ fn send_email_with_cc(from: &str, to: &str, cc: &str, subject: &str, body: &str)
         .body(body.to_string())
         .unwrap();
 
-    let mailer = SmtpTransport::builder_dangerous("127.0.0.1")
-        .port(smtp_port())
-        .tls(Tls::None)
-        .build();
-
-    mailer.send(&email).unwrap();
+    send_test_message(&email);
 }
 
 fn send_email_with_cc_and_attachment(
@@ -114,12 +104,16 @@ fn send_email_with_cc_and_attachment(
         )
         .unwrap();
 
+    send_test_message(&email);
+}
+
+fn send_test_message(email: &Message) {
     let mailer = SmtpTransport::builder_dangerous("127.0.0.1")
         .port(smtp_port())
         .tls(Tls::None)
         .build();
 
-    mailer.send(&email).unwrap();
+    mailer.send(email).unwrap();
 }
 
 fn imap_connect(user: &str) -> ImapSession {
