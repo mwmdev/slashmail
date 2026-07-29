@@ -12,6 +12,13 @@ pub enum BodyFormat {
     Html,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftAttachment {
+    pub filename: String,
+    pub content_type: header::ContentType,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug)]
 pub struct NewDraftInput {
     pub sender: Mailbox,
@@ -21,6 +28,7 @@ pub struct NewDraftInput {
     pub subject: String,
     pub body: String,
     pub format: BodyFormat,
+    pub attachments: Vec<DraftAttachment>,
 }
 
 #[derive(Clone, Debug)]
@@ -30,6 +38,7 @@ pub struct ReplyDraftInput<'a> {
     pub body: String,
     pub format: BodyFormat,
     pub quote_original: bool,
+    pub attachments: Vec<DraftAttachment>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +125,7 @@ struct MessageInput {
     format: BodyFormat,
     in_reply_to: Option<String>,
     references: Option<String>,
+    attachments: Vec<DraftAttachment>,
 }
 
 pub fn parse_mailbox(value: &str, field: &str) -> Result<Mailbox> {
@@ -361,6 +371,7 @@ pub fn compose_new_draft(input: NewDraftInput) -> Result<ComposedDraft> {
         format: input.format,
         in_reply_to: None,
         references: None,
+        attachments: input.attachments,
     })
 }
 
@@ -386,6 +397,7 @@ pub fn compose_reply_draft(input: ReplyDraftInput<'_>) -> Result<ComposedDraft> 
         format: input.format,
         in_reply_to: context.in_reply_to,
         references: context.references,
+        attachments: input.attachments,
     })
 }
 
@@ -400,7 +412,9 @@ fn build_message(input: MessageInput) -> Result<ComposedDraft> {
         format,
         in_reply_to,
         references,
+        attachments,
     } = input;
+    let _ = attachments;
     let mut builder = Message::builder()
         .from(sender)
         .subject(subject.clone())
@@ -838,6 +852,7 @@ mod tests {
             subject: "Hello".to_string(),
             body: "Body".to_string(),
             format: BodyFormat::Plain,
+            attachments: Vec::new(),
         }
     }
 
@@ -855,6 +870,7 @@ mod tests {
             },
             format,
             quote_original,
+            attachments: Vec::new(),
         })
     }
 
@@ -875,6 +891,7 @@ mod tests {
             subject: "Héllo 世界".to_string(),
             body: "Plain body".to_string(),
             format: BodyFormat::Plain,
+            attachments: Vec::new(),
         })
         .unwrap();
 
@@ -977,6 +994,7 @@ Content-Type: text/plain; charset=utf-8\r\n\r\n\
             body: "<p>New reply</p>".to_string(),
             format: BodyFormat::Html,
             quote_original: true,
+            attachments: Vec::new(),
         })
         .unwrap();
 
