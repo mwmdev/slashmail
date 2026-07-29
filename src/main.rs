@@ -482,6 +482,7 @@ where
     Ok(DraftCredential(password))
 }
 
+#[cfg(test)]
 fn read_draft_body_with<R, F>(
     account: &config::ResolvedAccount,
     environment: F,
