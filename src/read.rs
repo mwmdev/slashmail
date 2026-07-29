@@ -166,14 +166,26 @@ fn print_message(raw: &[u8]) {
         println!("{}", text.trim_end());
     }
 
-    if !attachments.is_empty() {
-        println!(
-            "\n[{} attachment{}: {}]",
-            attachments.len(),
-            if attachments.len() == 1 { "" } else { "s" },
-            attachments.join(", ")
-        );
+    if let Some(summary) = render_attachment_summary(&attachments) {
+        println!("\n{summary}");
     }
+}
+
+fn render_attachment_summary(attachments: &[String]) -> Option<String> {
+    if attachments.is_empty() {
+        return None;
+    }
+
+    let names = attachments
+        .iter()
+        .map(|name| crate::display::sanitize_terminal_field(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "[{} attachment{}: {names}]",
+        attachments.len(),
+        if attachments.len() == 1 { "" } else { "s" }
+    ))
 }
 
 fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
@@ -311,15 +323,19 @@ fn is_attachment(part: &mailparse::ParsedMail) -> bool {
 }
 
 fn attachment_name(part: &mailparse::ParsedMail) -> Option<String> {
+    if !is_attachment(part) {
+        return None;
+    }
+
     let disposition = part.get_content_disposition();
-    (disposition.disposition == DispositionType::Attachment).then(|| {
+    Some(
         disposition
             .params
             .get("filename")
             .cloned()
             .or_else(|| part.ctype.params.get("name").cloned())
-            .unwrap_or_else(|| "unnamed".to_string())
-    })
+            .unwrap_or_else(|| "unnamed".to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -501,6 +517,23 @@ hidden attachment text\r\n\
             decoded_text_body(&parsed).unwrap().unwrap().trim(),
             "Visible body"
         );
+    }
+
+    #[test]
+    fn attachment_summary_sanitizes_decoded_rfc2231_terminal_controls() {
+        let raw = b"Content-Type: application/octet-stream\r\n\
+Content-Disposition: attachment;\r\n\
+\tfilename*=utf-8''safe%1B%5D52%3Bc%3Bsecret%07%0A%E2%80%AEtail.txt\r\n\r\n\
+bytes";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let (_, attachments) = extract_body(&parsed);
+
+        assert!(attachments[0].contains('\u{1b}'));
+        let summary = render_attachment_summary(&attachments).unwrap();
+        assert_eq!(summary, "[1 attachment: safe  tail.txt]");
+        assert!(!summary.chars().any(char::is_control));
+        assert!(!summary.contains('\u{202e}'));
+        assert!(!summary.contains("secret"));
     }
 
     #[test]

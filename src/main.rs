@@ -789,20 +789,22 @@ fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> 
     };
     let mut session = factory.connect()?;
     let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
-    let composed = draft::compose_new_draft(draft::NewDraftInput {
-        sender,
-        to,
-        cc,
-        bcc,
-        subject: args.subject.clone(),
-        body,
-        format: if args.html {
-            draft::BodyFormat::Html
-        } else {
-            draft::BodyFormat::Plain
+    let composed = draft::compose_new_draft_with_attachments(
+        draft::NewDraftInput {
+            sender,
+            to,
+            cc,
+            bcc,
+            subject: args.subject.clone(),
+            body,
+            format: if args.html {
+                draft::BodyFormat::Html
+            } else {
+                draft::BodyFormat::Plain
+            },
         },
         attachments,
-    })?;
+    )?;
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
     report_save_outcome(outcome?, account, &folder, &composed)
@@ -824,18 +826,20 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
     let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
     let source_folder = args.folder.as_deref().unwrap_or(&account.default_folder);
     let source = fetch_reply_source(&mut session, source_folder, args.uid)?;
-    let composed = draft::compose_reply_draft(draft::ReplyDraftInput {
-        sender,
-        source: &source,
-        body,
-        format: if args.html {
-            draft::BodyFormat::Html
-        } else {
-            draft::BodyFormat::Plain
+    let composed = draft::compose_reply_draft_with_attachments(
+        draft::ReplyDraftInput {
+            sender,
+            source: &source,
+            body,
+            format: if args.html {
+                draft::BodyFormat::Html
+            } else {
+                draft::BodyFormat::Plain
+            },
+            quote_original: !args.no_quote,
         },
-        quote_original: !args.no_quote,
         attachments,
-    })?;
+    )?;
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
     report_save_outcome(outcome?, account, &folder, &composed)
@@ -2215,7 +2219,6 @@ mod tests {
             subject: "Sensitive subject".to_string(),
             body: "private body".to_string(),
             format: draft::BodyFormat::Plain,
-            attachments: Vec::new(),
         })
         .unwrap();
         for outcome in [

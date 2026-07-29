@@ -163,12 +163,16 @@ fn slashmail_bin() -> String {
 }
 
 fn write_multi_account_config(path: &Path, accounts: &[(&str, &str)]) {
+    write_multi_account_config_with_port(path, accounts, imap_port());
+}
+
+fn write_multi_account_config_with_port(path: &Path, accounts: &[(&str, &str)], port: u16) {
     let mut config = String::from("default_account = \"personal\"\n\n");
     for (name, user) in accounts {
         let email = user_email(user);
         config.push_str(&format!(
             "[[accounts]]\nname = \"{name}\"\nhost = \"127.0.0.1\"\nport = {}\ntls = false\nuser = \"{email}\"\npass_env = \"SLASHMAIL_{}_PASS\"\ndefault_folder = \"INBOX\"\n\n",
-            imap_port(),
+            port,
             name.to_uppercase()
         ));
     }
@@ -745,6 +749,47 @@ fn cli_rejects_invalid_local_attachments_without_creating_drafts() {
         );
         owner_session.logout().unwrap();
     }
+}
+
+#[test]
+fn cli_preflights_every_attachment_before_network_access() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let valid = tmp.path().join("valid.bin");
+    let missing = tmp.path().join("missing.bin");
+    std::fs::write(&valid, b"valid bytes").unwrap();
+
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let unreachable_port = listener.local_addr().unwrap().port();
+    drop(listener);
+
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config_with_port(&config, &accounts, unreachable_port);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command
+        .args([
+            "--account",
+            "personal",
+            "draft",
+            "--to",
+            &user_email(&recipient),
+            "--attach",
+        ])
+        .arg(&valid)
+        .arg("--attach")
+        .arg(&missing)
+        .stdin(Stdio::null());
+
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("missing.bin"),
+        "expected the second attachment error before any connection error, got: {stderr}"
+    );
 }
 
 #[test]
