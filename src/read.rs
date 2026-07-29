@@ -1,4 +1,5 @@
 use anyhow::{Context, Result};
+use mailparse::DispositionType;
 use std::collections::HashMap;
 
 use crate::connection::ImapSession;
@@ -165,14 +166,26 @@ fn print_message(raw: &[u8]) {
         println!("{}", text.trim_end());
     }
 
-    if !attachments.is_empty() {
-        println!(
-            "\n[{} attachment{}: {}]",
-            attachments.len(),
-            if attachments.len() == 1 { "" } else { "s" },
-            attachments.join(", ")
-        );
+    if let Some(summary) = render_attachment_summary(&attachments) {
+        println!("\n{summary}");
     }
+}
+
+fn render_attachment_summary(attachments: &[String]) -> Option<String> {
+    if attachments.is_empty() {
+        return None;
+    }
+
+    let names = attachments
+        .iter()
+        .map(|name| crate::display::sanitize_terminal_field(name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    Some(format!(
+        "[{} attachment{}: {names}]",
+        attachments.len(),
+        if attachments.len() == 1 { "" } else { "s" }
+    ))
 }
 
 fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
@@ -295,15 +308,8 @@ fn collect_text_parts(
 }
 
 fn collect_attachments(part: &mailparse::ParsedMail, attachments: &mut Vec<String>) {
-    let disposition_raw = content_disposition(part);
-
-    if disposition_raw.to_lowercase().starts_with("attachment") {
-        if let Some(name) = part.ctype.params.get("name") {
-            attachments.push(name.clone());
-        } else {
-            let filename = extract_disposition_filename(&disposition_raw);
-            attachments.push(filename.unwrap_or_else(|| "unnamed".to_string()));
-        }
+    if let Some(name) = attachment_name(part) {
+        attachments.push(name);
         return;
     }
 
@@ -313,29 +319,23 @@ fn collect_attachments(part: &mailparse::ParsedMail, attachments: &mut Vec<Strin
 }
 
 fn is_attachment(part: &mailparse::ParsedMail) -> bool {
-    content_disposition(part)
-        .to_ascii_lowercase()
-        .starts_with("attachment")
+    part.get_content_disposition().disposition == DispositionType::Attachment
 }
 
-fn content_disposition(part: &mailparse::ParsedMail) -> String {
-    part.headers
-        .iter()
-        .find(|header| header.get_key().eq_ignore_ascii_case("Content-Disposition"))
-        .map(|header| header.get_value())
-        .unwrap_or_default()
-}
+fn attachment_name(part: &mailparse::ParsedMail) -> Option<String> {
+    if !is_attachment(part) {
+        return None;
+    }
 
-fn extract_disposition_filename(disposition: &str) -> Option<String> {
-    disposition.split(';').find_map(|param| {
-        let param = param.trim();
-        if param.to_lowercase().starts_with("filename=") {
-            let value = param["filename=".len()..].trim();
-            Some(value.trim_matches('"').to_string())
-        } else {
-            None
-        }
-    })
+    let disposition = part.get_content_disposition();
+    Some(
+        disposition
+            .params
+            .get("filename")
+            .cloned()
+            .or_else(|| part.ctype.params.get("name").cloned())
+            .unwrap_or_else(|| "unnamed".to_string()),
+    )
 }
 
 #[cfg(test)]
@@ -495,23 +495,71 @@ Content-Transfer-Encoding: base64\r\n\r\n\
     }
 
     #[test]
-    fn extract_disposition_filename_quoted() {
+    fn extract_body_decodes_rfc2231_filename_and_prefers_it_to_type_name() {
+        let raw = b"Content-Type: multipart/mixed; boundary=bound\r\n\r\n\
+--bound\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\r\n\
+Visible body\r\n\
+--bound\r\n\
+Content-Type: application/pdf; name=\"compatibility-fallback.pdf\"\r\n\
+Content-Disposition: attachment;\r\n\
+\tfilename*0*=utf-8''r%C3%A9sum%C3%A9%20;\r\n\
+\tfilename*1*=final.pdf\r\n\r\n\
+hidden attachment text\r\n\
+--bound--";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        let (text, attachments) = extract_body(&parsed);
+
+        assert_eq!(text.trim(), "Visible body");
+        assert_eq!(attachments, ["résumé final.pdf"]);
         assert_eq!(
-            extract_disposition_filename("attachment; filename=\"report.pdf\""),
-            Some("report.pdf".to_string())
+            decoded_text_body(&parsed).unwrap().unwrap().trim(),
+            "Visible body"
         );
     }
 
     #[test]
-    fn extract_disposition_filename_unquoted() {
-        assert_eq!(
-            extract_disposition_filename("attachment; filename=report.pdf"),
-            Some("report.pdf".to_string())
-        );
+    fn attachment_summary_sanitizes_decoded_rfc2231_terminal_controls() {
+        let raw = b"Content-Type: application/octet-stream\r\n\
+Content-Disposition: attachment;\r\n\
+\tfilename*=utf-8''safe%1B%5D52%3Bc%3Bsecret%07%0A%E2%80%AEtail.txt\r\n\r\n\
+bytes";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        let (_, attachments) = extract_body(&parsed);
+
+        assert!(attachments[0].contains('\u{1b}'));
+        let summary = render_attachment_summary(&attachments).unwrap();
+        assert_eq!(summary, "[1 attachment: safe  tail.txt]");
+        assert!(!summary.chars().any(char::is_control));
+        assert!(!summary.contains('\u{202e}'));
+        assert!(!summary.contains("secret"));
     }
 
     #[test]
-    fn extract_disposition_filename_missing() {
-        assert_eq!(extract_disposition_filename("attachment"), None);
+    fn attachment_name_uses_content_type_name_as_compatibility_fallback() {
+        let raw = b"Content-Type: application/octet-stream; name=\"legacy.bin\"\r\n\
+Content-Disposition: attachment\r\n\r\n\
+bytes";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        let (text, attachments) = extract_body(&parsed);
+
+        assert!(text.is_empty());
+        assert_eq!(attachments, ["legacy.bin"]);
+    }
+
+    #[test]
+    fn unnamed_attachment_is_still_classified_and_excluded_from_text() {
+        let raw = b"Content-Type: text/plain\r\n\
+Content-Disposition: attachment\r\n\r\n\
+hidden text";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+
+        let (text, attachments) = extract_body(&parsed);
+
+        assert!(text.is_empty());
+        assert_eq!(attachments, ["unnamed"]);
+        assert_eq!(decoded_text_body(&parsed).unwrap(), None);
     }
 }

@@ -6,8 +6,11 @@ use clap::{CommandFactory, FromArgMatches, Parser, Subcommand};
 use comfy_table::{presets::UTF8_FULL_CONDENSED, Cell, Color, Table};
 use indicatif::{ProgressBar, ProgressStyle};
 use regex::Regex;
-use std::io::Read;
-use std::path::PathBuf;
+use std::fs::{File, OpenOptions};
+use std::io::{ErrorKind, Read};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 use zeroize::Zeroize;
@@ -138,6 +141,10 @@ struct DraftArgs {
     #[arg(long)]
     html: bool,
 
+    /// Local file to attach (repeat once per file)
+    #[arg(long, value_name = "PATH")]
+    attach: Vec<PathBuf>,
+
     /// Destination Drafts mailbox
     #[arg(long)]
     drafts_folder: Option<String>,
@@ -160,6 +167,10 @@ struct ReplyArgs {
     /// Omit the quoted original message
     #[arg(long)]
     no_quote: bool,
+
+    /// Local file to attach (repeat once per file)
+    #[arg(long, value_name = "PATH")]
+    attach: Vec<PathBuf>,
 
     /// Destination Drafts mailbox
     #[arg(long)]
@@ -471,22 +482,152 @@ where
     Ok(DraftCredential(password))
 }
 
+#[cfg(test)]
 fn read_draft_body_with<R, F>(
     account: &config::ResolvedAccount,
     environment: F,
-    mut reader: R,
+    reader: R,
 ) -> Result<(DraftCredential, String)>
+where
+    R: Read,
+    F: FnMut(&str) -> Option<String>,
+{
+    let (credential, attachments, body) = prepare_draft_with(account, &[], environment, reader)?;
+    debug_assert!(attachments.is_empty());
+    Ok((credential, body))
+}
+
+fn prepare_draft_with<R, F>(
+    account: &config::ResolvedAccount,
+    attachment_paths: &[PathBuf],
+    environment: F,
+    mut reader: R,
+) -> Result<(DraftCredential, Vec<draft::DraftAttachment>, String)>
 where
     R: Read,
     F: FnMut(&str) -> Option<String>,
 {
     ensure_secure_draft_transport(account)?;
     let credential = draft_credential_with(account, environment)?;
+    let attachments = load_attachments(attachment_paths)?;
     let mut body = String::new();
     reader
         .read_to_string(&mut body)
         .context("Failed to read the draft body from stdin")?;
-    Ok((credential, body))
+    Ok((credential, attachments, body))
+}
+
+fn load_attachments(paths: &[PathBuf]) -> Result<Vec<draft::DraftAttachment>> {
+    paths.iter().map(|path| load_attachment(path)).collect()
+}
+
+fn load_attachment(path: &Path) -> Result<draft::DraftAttachment> {
+    let filename = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "Attachment path {} has no valid Unicode basename",
+                safe_attachment_path(path)
+            )
+        })?
+        .to_string();
+    if filename.chars().any(disallowed_attachment_name_character) {
+        bail!(
+            "Attachment path {} has a disallowed basename",
+            safe_attachment_path(path)
+        );
+    }
+
+    let mut options = OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    options.custom_flags(libc::O_NONBLOCK);
+    let mut file = options
+        .open(path)
+        .with_context(|| format!("Failed to open attachment {}", safe_attachment_path(path)))?;
+    let metadata = file.metadata().with_context(|| {
+        format!(
+            "Failed to inspect attachment {}",
+            safe_attachment_path(path)
+        )
+    })?;
+    if !metadata.file_type().is_file() {
+        bail!(
+            "Attachment path {} is not a regular file",
+            safe_attachment_path(path)
+        );
+    }
+    let bytes = read_attachment_bytes(&mut file, path)?;
+    let content_type = mime_guess::from_ext(
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or(""),
+    )
+    .first_or_octet_stream()
+    .into();
+
+    Ok(draft::DraftAttachment {
+        filename,
+        content_type,
+        bytes,
+    })
+}
+
+fn read_attachment_bytes(file: &mut File, path: &Path) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = match file.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) if error.kind() == ErrorKind::Interrupted => continue,
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed to read attachment {}", safe_attachment_path(path))
+                });
+            }
+        };
+        if read == 0 {
+            return Ok(bytes);
+        }
+        bytes.try_reserve(read).with_context(|| {
+            format!(
+                "Failed to allocate memory for attachment {}",
+                safe_attachment_path(path)
+            )
+        })?;
+        bytes.extend_from_slice(&buffer[..read]);
+    }
+}
+
+fn disallowed_attachment_name_character(character: char) -> bool {
+    character.is_control()
+        || matches!(
+            character,
+            '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}'
+        )
+}
+
+fn safe_attachment_path(path: &Path) -> String {
+    let raw = path.as_os_str().to_string_lossy();
+    let mut escaped = String::from("\"");
+    for character in raw.chars() {
+        match character {
+            '\\' => escaped.push_str("\\\\"),
+            '"' => escaped.push_str("\\\""),
+            character if disallowed_attachment_name_character(character) => {
+                escaped.push_str(&format!("\\u{{{:x}}}", character as u32));
+            }
+            character => escaped.push(character),
+        }
+    }
+    escaped.push('"');
+    escaped
 }
 
 fn ensure_secure_draft_transport(account: &config::ResolvedAccount) -> Result<()> {
@@ -636,27 +777,34 @@ fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> 
     let to = parse_recipient_flags(&args.to, "To")?;
     let cc = parse_recipient_flags(&args.cc, "Cc")?;
     let bcc = parse_recipient_flags(&args.bcc, "Bcc")?;
-    let (credential, body) =
-        read_draft_body_with(account, |name| std::env::var(name).ok(), std::io::stdin())?;
+    let (credential, attachments, body) = prepare_draft_with(
+        account,
+        &args.attach,
+        |name| std::env::var(name).ok(),
+        std::io::stdin(),
+    )?;
     let factory = DraftSessionFactory {
         account,
         credential,
     };
     let mut session = factory.connect()?;
     let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
-    let composed = draft::compose_new_draft(draft::NewDraftInput {
-        sender,
-        to,
-        cc,
-        bcc,
-        subject: args.subject.clone(),
-        body,
-        format: if args.html {
-            draft::BodyFormat::Html
-        } else {
-            draft::BodyFormat::Plain
+    let composed = draft::compose_new_draft_with_attachments(
+        draft::NewDraftInput {
+            sender,
+            to,
+            cc,
+            bcc,
+            subject: args.subject.clone(),
+            body,
+            format: if args.html {
+                draft::BodyFormat::Html
+            } else {
+                draft::BodyFormat::Plain
+            },
         },
-    })?;
+        attachments,
+    )?;
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
     report_save_outcome(outcome?, account, &folder, &composed)
@@ -664,8 +812,12 @@ fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> 
 
 fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> {
     let sender = draft_sender(account)?;
-    let (credential, body) =
-        read_draft_body_with(account, |name| std::env::var(name).ok(), std::io::stdin())?;
+    let (credential, attachments, body) = prepare_draft_with(
+        account,
+        &args.attach,
+        |name| std::env::var(name).ok(),
+        std::io::stdin(),
+    )?;
     let factory = DraftSessionFactory {
         account,
         credential,
@@ -674,17 +826,20 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
     let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
     let source_folder = args.folder.as_deref().unwrap_or(&account.default_folder);
     let source = fetch_reply_source(&mut session, source_folder, args.uid)?;
-    let composed = draft::compose_reply_draft(draft::ReplyDraftInput {
-        sender,
-        source: &source,
-        body,
-        format: if args.html {
-            draft::BodyFormat::Html
-        } else {
-            draft::BodyFormat::Plain
+    let composed = draft::compose_reply_draft_with_attachments(
+        draft::ReplyDraftInput {
+            sender,
+            source: &source,
+            body,
+            format: if args.html {
+                draft::BodyFormat::Html
+            } else {
+                draft::BodyFormat::Plain
+            },
+            quote_original: !args.no_quote,
         },
-        quote_original: !args.no_quote,
-    })?;
+        attachments,
+    )?;
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
     report_save_outcome(outcome?, account, &folder, &composed)
@@ -1676,6 +1831,242 @@ mod tests {
         assert_eq!(args.bcc, ["bcc@example.com"]);
         assert!(args.html);
         assert_eq!(args.drafts_folder.as_deref(), Some("Nested/Drafts"));
+    }
+
+    #[test]
+    fn draft_and_reply_clap_preserve_attachment_order_and_spaces() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "draft",
+            "--to",
+            "one@example.com",
+            "--attach",
+            "first report.pdf",
+            "--attach",
+            "images/second image.PNG",
+        ])
+        .unwrap();
+        let Commands::Draft(args) = cli.command else {
+            panic!("expected draft command")
+        };
+        assert_eq!(
+            args.attach,
+            [
+                PathBuf::from("first report.pdf"),
+                PathBuf::from("images/second image.PNG"),
+            ]
+        );
+
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "reply",
+            "42",
+            "--attach",
+            "first report.pdf",
+            "--attach",
+            "images/second image.PNG",
+        ])
+        .unwrap();
+        let Commands::Reply(args) = cli.command else {
+            panic!("expected reply command")
+        };
+        assert_eq!(
+            args.attach,
+            [
+                PathBuf::from("first report.pdf"),
+                PathBuf::from("images/second image.PNG"),
+            ]
+        );
+    }
+
+    #[test]
+    fn attachment_loader_keeps_empty_duplicate_and_unicode_files_in_order() {
+        let directory = tempfile::tempdir().unwrap();
+        let empty = directory.path().join("résumé.txt");
+        let unknown = directory.path().join("payload.unknown-extension");
+        std::fs::write(&empty, []).unwrap();
+        std::fs::write(&unknown, [0_u8, 255, 17]).unwrap();
+
+        let loaded = load_attachments(&[empty.clone(), unknown.clone(), empty.clone()]).unwrap();
+
+        assert_eq!(loaded.len(), 3);
+        assert_eq!(loaded[0].filename, "résumé.txt");
+        assert!(loaded[0].bytes.is_empty());
+        assert_eq!(
+            loaded[0].content_type,
+            lettre::message::header::ContentType::parse("text/plain").unwrap()
+        );
+        assert_eq!(loaded[1].filename, "payload.unknown-extension");
+        assert_eq!(loaded[1].bytes, [0, 255, 17]);
+        assert_eq!(
+            loaded[1].content_type,
+            lettre::message::header::ContentType::parse("application/octet-stream").unwrap()
+        );
+        assert_eq!(loaded[2], loaded[0]);
+    }
+
+    #[test]
+    fn attachment_loader_infers_uppercase_extension_and_falls_back_without_one() {
+        let directory = tempfile::tempdir().unwrap();
+        let png = directory.path().join("image.PNG");
+        let extensionless = directory.path().join("LICENSE");
+        std::fs::write(&png, b"not actually a png").unwrap();
+        std::fs::write(&extensionless, b"text").unwrap();
+
+        let loaded = load_attachments(&[png, extensionless]).unwrap();
+
+        assert_eq!(
+            loaded[0].content_type,
+            lettre::message::header::ContentType::parse("image/png").unwrap()
+        );
+        assert_eq!(
+            loaded[1].content_type,
+            lettre::message::header::ContentType::parse("application/octet-stream").unwrap()
+        );
+    }
+
+    #[test]
+    fn invalid_attachment_fails_after_credentials_but_before_stdin() {
+        let account = draft_account();
+        let missing = PathBuf::from("missing-attachment.txt");
+
+        let error = match prepare_draft_with(
+            &account,
+            &[missing],
+            |_| Some("secret".to_string()),
+            MustNotRead,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("missing attachment should fail"),
+        };
+
+        assert!(error.to_string().contains("missing-attachment.txt"));
+    }
+
+    #[test]
+    fn credential_failure_precedes_attachment_access() {
+        let account = draft_account();
+        let error = match prepare_draft_with(
+            &account,
+            &[PathBuf::from("missing-attachment.txt")],
+            |_| None,
+            MustNotRead,
+        ) {
+            Err(error) => error,
+            Ok(_) => panic!("missing credentials should fail"),
+        };
+
+        assert!(error.to_string().contains("password environment"));
+        assert!(!error.to_string().contains("missing-attachment.txt"));
+    }
+
+    #[test]
+    fn attachment_names_reject_controls_bidi_and_line_separators_safely() {
+        for name in [
+            "escape\u{1b}[31m.txt",
+            "looks-like-txt\u{202e}fdp",
+            "multiline\u{2028}name.txt",
+            "paragraph\u{2029}name.txt",
+        ] {
+            let error = load_attachments(&[PathBuf::from(name)]).unwrap_err();
+            let rendered = error.to_string();
+            assert!(rendered.contains("disallowed basename"));
+            assert!(!rendered.chars().any(char::is_control));
+            assert!(!rendered.contains('\u{202e}'));
+            assert!(!rendered.contains('\u{2028}'));
+            assert!(!rendered.contains('\u{2029}'));
+            assert!(!rendered.contains("attachment contents"));
+        }
+    }
+
+    #[test]
+    fn directory_is_rejected_as_a_non_regular_attachment() {
+        let directory = tempfile::tempdir().unwrap();
+        let error = load_attachments(&[directory.path().to_path_buf()]).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn symlink_uses_caller_basename_and_rejects_dangling_or_directory_targets() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("resolved-secret-name.bin");
+        let alias = directory.path().join("public-name.dat");
+        std::fs::write(&target, [1_u8, 2, 3]).unwrap();
+        symlink(&target, &alias).unwrap();
+
+        let loaded = load_attachments(std::slice::from_ref(&alias)).unwrap();
+        assert_eq!(loaded[0].filename, "public-name.dat");
+        assert_eq!(loaded[0].bytes, [1, 2, 3]);
+
+        let dangling = directory.path().join("dangling.txt");
+        symlink(directory.path().join("does-not-exist"), &dangling).unwrap();
+        assert!(load_attachments(&[dangling]).is_err());
+
+        let directory_alias = directory.path().join("directory.txt");
+        symlink(directory.path(), &directory_alias).unwrap();
+        let error = load_attachments(&[directory_alias]).unwrap_err();
+        assert!(error.to_string().contains("not a regular file"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_unicode_attachment_basename_is_rejected() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(OsString::from_vec(vec![b'a', 0xff]));
+        std::fs::write(&path, b"data").unwrap();
+        let error = load_attachments(&[path]).unwrap_err();
+        assert!(error.to_string().contains("valid Unicode basename"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unreadable_attachment_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("private.txt");
+        std::fs::write(&path, b"private attachment bytes").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+        let result = load_attachments(std::slice::from_ref(&path));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(result.is_err());
+        assert!(!result
+            .unwrap_err()
+            .to_string()
+            .contains("private attachment bytes"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fifo_is_rejected_without_waiting_for_a_writer() {
+        use std::process::Command;
+        use std::sync::mpsc;
+
+        let directory = tempfile::tempdir().unwrap();
+        let fifo = directory.path().join("pipe.dat");
+        assert!(Command::new("mkfifo")
+            .arg(&fifo)
+            .status()
+            .unwrap()
+            .success());
+        let (sender, receiver) = mpsc::channel();
+        std::thread::spawn(move || {
+            sender.send(load_attachments(&[fifo])).unwrap();
+        });
+
+        let result = receiver
+            .recv_timeout(Duration::from_secs(1))
+            .expect("FIFO validation blocked waiting for a writer");
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("not a regular file"));
     }
 
     #[test]

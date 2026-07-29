@@ -23,6 +23,70 @@ pub fn format_size(bytes: u64) -> String {
     }
 }
 
+pub fn sanitize_terminal_field(value: &str) -> String {
+    #[derive(Clone, Copy)]
+    enum EscapeState {
+        Text,
+        Escape,
+        Csi,
+        Osc,
+        OscEscape,
+    }
+
+    let mut output = String::with_capacity(value.len());
+    let mut state = EscapeState::Text;
+    for character in value.chars() {
+        state = match state {
+            EscapeState::Text => match character {
+                '\u{1b}' => EscapeState::Escape,
+                '\u{009b}' => EscapeState::Csi,
+                '\u{009d}' => EscapeState::Osc,
+                '\u{061c}'
+                | '\u{200e}'
+                | '\u{200f}'
+                | '\u{2028}'..='\u{202e}'
+                | '\u{2066}'..='\u{2069}' => {
+                    output.push(' ');
+                    EscapeState::Text
+                }
+                character if character.is_control() || matches!(character as u32, 0x80..=0x9f) => {
+                    output.push(' ');
+                    EscapeState::Text
+                }
+                character => {
+                    output.push(character);
+                    EscapeState::Text
+                }
+            },
+            EscapeState::Escape => match character {
+                '[' => EscapeState::Csi,
+                ']' => EscapeState::Osc,
+                _ => EscapeState::Text,
+            },
+            EscapeState::Csi => {
+                if matches!(character as u32, 0x40..=0x7e) {
+                    EscapeState::Text
+                } else {
+                    EscapeState::Csi
+                }
+            }
+            EscapeState::Osc => match character {
+                '\u{7}' => EscapeState::Text,
+                '\u{1b}' => EscapeState::OscEscape,
+                _ => EscapeState::Osc,
+            },
+            EscapeState::OscEscape => {
+                if character == '\\' {
+                    EscapeState::Text
+                } else {
+                    EscapeState::Osc
+                }
+            }
+        };
+    }
+    output
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -55,6 +119,14 @@ mod tests {
     #[test]
     fn format_size_megabytes_large() {
         assert_eq!(format_size(5_242_880), "5.0M");
+    }
+
+    #[test]
+    fn terminal_fields_remove_escape_controls_and_unsafe_unicode() {
+        let rendered = sanitize_terminal_field("safe\u{1b}]52;c;secret\u{7}\n\u{202e}\u{2066}tail");
+
+        assert_eq!(rendered, "safe   tail");
+        assert!(!rendered.chars().any(char::is_control));
     }
 
     #[test]

@@ -23,6 +23,7 @@ clap_mangen = "0.2"
 inquire = "0.9"
 comfy-table = "=7.1.3"
 mailparse = "0.15"
+mime_guess = { version = "2.0.5", default-features = false }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -33,14 +34,17 @@ regex = "1"
 zeroize = "1"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 html2text = "0.15.5"
-lettre = { version = "=0.11.19", default-features = false, features = ["builder"] }
+lettre = { version = "=0.11.19", default-features = false, features = ["builder", "mime03"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 vendored-openssl = ["openssl"]
 integration-tests = []
 
 [dev-dependencies]
-lettre = { version = "=0.11.19", default-features = false, features = ["builder", "smtp-transport", "native-tls"] }
+lettre = { version = "=0.11.19", default-features = false, features = ["builder", "mime03", "smtp-transport", "native-tls"] }
 tempfile = ">=3,<3.25"
 
 [profile.release]

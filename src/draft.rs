@@ -1,7 +1,9 @@
 use std::collections::HashSet;
 
 use anyhow::{anyhow, bail, Context, Result};
-use lettre::message::{header, Mailbox, Message, MessageBuilder, SinglePart};
+use lettre::message::{
+    header, Attachment, Body, Mailbox, Message, MessageBuilder, MultiPart, SinglePart,
+};
 use mailparse::{addrparse_header, MailAddr, MailHeader, MailHeaderMap, ParsedMail};
 
 use crate::read::decoded_text_body;
@@ -10,6 +12,13 @@ use crate::read::decoded_text_body;
 pub enum BodyFormat {
     Plain,
     Html,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DraftAttachment {
+    pub filename: String,
+    pub content_type: header::ContentType,
+    pub bytes: Vec<u8>,
 }
 
 #[derive(Clone, Debug)]
@@ -116,6 +125,7 @@ struct MessageInput {
     format: BodyFormat,
     in_reply_to: Option<String>,
     references: Option<String>,
+    attachments: Vec<DraftAttachment>,
 }
 
 pub fn parse_mailbox(value: &str, field: &str) -> Result<Mailbox> {
@@ -281,66 +291,17 @@ fn render_receipt_list(values: &[String]) -> String {
 }
 
 pub fn sanitize_receipt_field(value: &str) -> String {
-    #[derive(Clone, Copy)]
-    enum EscapeState {
-        Text,
-        Escape,
-        Csi,
-        Osc,
-        OscEscape,
-    }
-
-    let mut output = String::with_capacity(value.len());
-    let mut state = EscapeState::Text;
-    for character in value.chars() {
-        state = match state {
-            EscapeState::Text => match character {
-                '\u{1b}' => EscapeState::Escape,
-                '\u{009b}' => EscapeState::Csi,
-                '\u{009d}' => EscapeState::Osc,
-                '\u{2028}' | '\u{2029}' => {
-                    output.push(' ');
-                    EscapeState::Text
-                }
-                character if character.is_control() || matches!(character as u32, 0x80..=0x9f) => {
-                    output.push(' ');
-                    EscapeState::Text
-                }
-                character => {
-                    output.push(character);
-                    EscapeState::Text
-                }
-            },
-            EscapeState::Escape => match character {
-                '[' => EscapeState::Csi,
-                ']' => EscapeState::Osc,
-                _ => EscapeState::Text,
-            },
-            EscapeState::Csi => {
-                if matches!(character as u32, 0x40..=0x7e) {
-                    EscapeState::Text
-                } else {
-                    EscapeState::Csi
-                }
-            }
-            EscapeState::Osc => match character {
-                '\u{7}' => EscapeState::Text,
-                '\u{1b}' => EscapeState::OscEscape,
-                _ => EscapeState::Osc,
-            },
-            EscapeState::OscEscape => {
-                if character == '\\' {
-                    EscapeState::Text
-                } else {
-                    EscapeState::Osc
-                }
-            }
-        };
-    }
-    output
+    crate::display::sanitize_terminal_field(value)
 }
 
 pub fn compose_new_draft(input: NewDraftInput) -> Result<ComposedDraft> {
+    compose_new_draft_with_attachments(input, Vec::new())
+}
+
+pub fn compose_new_draft_with_attachments(
+    input: NewDraftInput,
+    attachments: Vec<DraftAttachment>,
+) -> Result<ComposedDraft> {
     validate_mailbox(&input.sender, "sender")?;
     validate_mailboxes(&input.to, "To")?;
     validate_mailboxes(&input.cc, "Cc")?;
@@ -361,10 +322,18 @@ pub fn compose_new_draft(input: NewDraftInput) -> Result<ComposedDraft> {
         format: input.format,
         in_reply_to: None,
         references: None,
+        attachments,
     })
 }
 
 pub fn compose_reply_draft(input: ReplyDraftInput<'_>) -> Result<ComposedDraft> {
+    compose_reply_draft_with_attachments(input, Vec::new())
+}
+
+pub fn compose_reply_draft_with_attachments(
+    input: ReplyDraftInput<'_>,
+    attachments: Vec<DraftAttachment>,
+) -> Result<ComposedDraft> {
     validate_mailbox(&input.sender, "sender")?;
     let source = mailparse::parse_mail(input.source).context("Failed to parse reply source")?;
     let context = derive_reply_context(&source, &input.sender, input.quote_original)?;
@@ -386,6 +355,7 @@ pub fn compose_reply_draft(input: ReplyDraftInput<'_>) -> Result<ComposedDraft> 
         format: input.format,
         in_reply_to: context.in_reply_to,
         references: context.references,
+        attachments,
     })
 }
 
@@ -400,6 +370,7 @@ fn build_message(input: MessageInput) -> Result<ComposedDraft> {
         format,
         in_reply_to,
         references,
+        attachments,
     } = input;
     let mut builder = Message::builder()
         .from(sender)
@@ -423,9 +394,21 @@ fn build_message(input: MessageInput) -> Result<ComposedDraft> {
         BodyFormat::Plain => SinglePart::plain(body),
         BodyFormat::Html => SinglePart::html(body),
     };
-    let message = builder
-        .singlepart(part)
-        .context("Failed to build draft message")?;
+    let message = if attachments.is_empty() {
+        builder.singlepart(part)
+    } else {
+        let mut multipart = MultiPart::mixed().singlepart(part);
+        for attachment in attachments {
+            let body =
+                Body::new_with_encoding(attachment.bytes, header::ContentTransferEncoding::Base64)
+                    .map_err(|_| anyhow!("Failed to encode attachment body"))?;
+            multipart = multipart.singlepart(
+                Attachment::new(attachment.filename).body(body, attachment.content_type),
+            );
+        }
+        builder.multipart(multipart)
+    }
+    .context("Failed to build draft message")?;
     let message_id = message
         .headers()
         .get::<header::MessageId>()
@@ -841,6 +824,14 @@ mod tests {
         }
     }
 
+    fn attachment(filename: &str, content_type: &str, bytes: &[u8]) -> DraftAttachment {
+        DraftAttachment {
+            filename: filename.to_string(),
+            content_type: header::ContentType::parse(content_type).unwrap(),
+            bytes: bytes.to_vec(),
+        }
+    }
+
     fn compose_reply(
         source: &[u8],
         format: BodyFormat,
@@ -937,6 +928,60 @@ mod tests {
     }
 
     #[test]
+    fn new_draft_attachments_are_body_first_ordered_and_byte_exact() {
+        let binary = [0_u8, 255, 17, 128, b'\r', b'\n'];
+        let mut input = new_input();
+        input.body = "Body before attachments".to_string();
+        let attachments = vec![
+            attachment("résumé.pdf", "application/pdf", b"first\xff"),
+            attachment("duplicate.bin", "application/octet-stream", &binary),
+            attachment("duplicate.bin", "application/octet-stream", b"third\x80"),
+        ];
+
+        let composed = compose_new_draft_with_attachments(input, attachments).unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+
+        assert_eq!(parsed.ctype.mimetype, "multipart/mixed");
+        assert_eq!(parsed.subparts.len(), 4);
+        assert_eq!(parsed.subparts[0].ctype.mimetype, "text/plain");
+        assert_eq!(
+            parsed.subparts[0].get_body().unwrap().trim_end(),
+            "Body before attachments"
+        );
+
+        let expected = [
+            ("résumé.pdf", "application/pdf", b"first\xff".as_slice()),
+            (
+                "duplicate.bin",
+                "application/octet-stream",
+                binary.as_slice(),
+            ),
+            (
+                "duplicate.bin",
+                "application/octet-stream",
+                b"third\x80".as_slice(),
+            ),
+        ];
+        for (part, (filename, content_type, bytes)) in parsed.subparts[1..].iter().zip(expected) {
+            let disposition = part.get_content_disposition();
+            assert_eq!(
+                disposition.disposition,
+                mailparse::DispositionType::Attachment
+            );
+            assert_eq!(
+                disposition.params.get("filename").map(String::as_str),
+                Some(filename)
+            );
+            assert_eq!(part.ctype.mimetype, content_type);
+            assert_eq!(
+                header_value(part, "Content-Transfer-Encoding").as_deref(),
+                Some("base64")
+            );
+            assert_eq!(part.get_body_raw().unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn new_draft_rejects_missing_to_and_caller_header_injection() {
         let mut missing_to = new_input();
         missing_to.to.clear();
@@ -1003,6 +1048,72 @@ Content-Type: text/plain; charset=utf-8\r\n\r\n\
         let body = parsed.get_body().unwrap();
         assert!(body.contains("&lt;script&gt;alert(1)&lt;/script&gt;"));
         assert!(!body.contains("<script>alert(1)</script>"));
+    }
+
+    #[test]
+    fn reply_attachment_keeps_headers_quote_and_omits_source_attachments() {
+        let source = b"From: Sender <sender@example.com>\r\n\
+To: Me <me@example.com>, Other <other@example.com>\r\n\
+Subject: Topic\r\n\
+Message-ID: <parent@example.com>\r\n\
+Content-Type: multipart/mixed; boundary=source\r\n\r\n\
+--source\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\r\n\
+Original body\r\n\
+--source\r\n\
+Content-Type: application/octet-stream\r\n\
+Content-Disposition: attachment; filename=source-secret.bin\r\n\r\n\
+SOURCE-ATTACHMENT-BYTES\r\n\
+--source--";
+        let composed = compose_reply_draft_with_attachments(
+            ReplyDraftInput {
+                sender: mailbox("Me <me@example.com>"),
+                source,
+                body: "<p>New reply</p>".to_string(),
+                format: BodyFormat::Html,
+                quote_original: true,
+            },
+            vec![attachment(
+                "explicit.dat",
+                "application/octet-stream",
+                &[0, 255, 1],
+            )],
+        )
+        .unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+
+        assert_eq!(parsed.ctype.mimetype, "multipart/mixed");
+        assert_eq!(parsed.subparts.len(), 2);
+        assert_eq!(parsed.subparts[0].ctype.mimetype, "text/html");
+        let body = parsed.subparts[0].get_body().unwrap();
+        assert!(body.starts_with("<p>New reply</p>"));
+        assert!(body.contains("Original body"));
+        assert!(!body.contains("SOURCE-ATTACHMENT-BYTES"));
+        assert_eq!(
+            header_value(&parsed, "In-Reply-To").as_deref(),
+            Some("<parent@example.com>")
+        );
+        assert_eq!(
+            composed
+                .to
+                .iter()
+                .map(|mailbox| mailbox.email.to_string())
+                .collect::<Vec<_>>(),
+            ["sender@example.com", "other@example.com"]
+        );
+
+        let attachment = &parsed.subparts[1];
+        let disposition = attachment.get_content_disposition();
+        assert_eq!(
+            disposition.disposition,
+            mailparse::DispositionType::Attachment
+        );
+        assert_eq!(
+            disposition.params.get("filename").map(String::as_str),
+            Some("explicit.dat")
+        );
+        assert_eq!(attachment.get_body_raw().unwrap(), [0, 255, 1]);
+        assert!(!String::from_utf8_lossy(&composed.bytes).contains("source-secret.bin"));
     }
 
     #[test]
@@ -1380,7 +1491,18 @@ Content-Transfer-Encoding: base64\r\n\r\n\
     }
 
     fn composed_for_save() -> ComposedDraft {
-        compose_new_draft(new_input()).unwrap()
+        let composed = compose_new_draft_with_attachments(
+            new_input(),
+            vec![attachment(
+                "state-machine.bin",
+                "application/octet-stream",
+                &[0, 255, 1],
+            )],
+        )
+        .unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+        assert_eq!(parsed.ctype.mimetype, "multipart/mixed");
+        composed
     }
 
     fn header_fetch(uid: u32, message_id: &str) -> HeaderFetch {

@@ -148,14 +148,16 @@ The draft destination is resolved in this order: command `--drafts-folder`, the 
 
 ### Email drafts
 
-`draft` and `reply` save an unsent message immediately with the IMAP `\Draft` flag. They do not send mail. The new body comes exclusively from stdin and is plain text unless `--html` is present.
+`draft` and `reply` save an unsent message immediately with the IMAP `\Draft` flag. They do not send mail. The new body comes exclusively from stdin and is plain text unless `--html` is present. Repeat `--attach PATH` to add exact local files in the order they should appear in the draft.
 
 Each `--to`, `--cc`, or `--bcc` occurrence accepts one RFC mailbox. Repeat the flag for multiple recipients; do not combine multiple mailboxes in one comma-separated value because a quoted display name can itself contain a comma.
 
 ```bash
 # New plain-text draft
 printf '%s\n' 'Please review the attached proposal.' |
-  slashmail draft --to client@example.com --subject "Proposal"
+  slashmail draft --to client@example.com --subject "Proposal" \
+    --attach './documents/client proposal.pdf' \
+    --attach './charts/revenue.png'
 
 # Multiple recipients and a named account
 printf '%s\n' 'Here is the project update.' |
@@ -176,7 +178,8 @@ printf '%s\n' 'Draft body' |
 
 # Reply to UID 1842 in the account's default folder
 printf '%s\n' 'Thanks, this looks good to me.' |
-  slashmail reply --account work 1842
+  slashmail reply --account work \
+    --attach './documents/revised proposal.pdf' 1842
 
 # Reply to a UID in another source folder and omit the original quote
 printf '%s\n' 'Following up with one correction.' |
@@ -188,17 +191,21 @@ printf '%s\n' '<p>Thanks, this looks good to me.</p>' |
     --drafts-folder "Saved/Drafts" 1842
 ```
 
-A reply targets exactly one source message by selected account, source `--folder` (or that account's `default_folder`), and UID. Slashmail derives the subject and recipients automatically using reply-all behavior, excludes the configured sender, preserves available thread metadata, and quotes the decoded original by default. Use `--no-quote` to omit that quote. Saving a reply does not mark the source as seen or answered.
+A reply targets exactly one source message by selected account, source `--folder` (or that account's `default_folder`), and UID. Slashmail derives the subject and recipients automatically using reply-all behavior, excludes the configured sender, preserves available thread metadata, and quotes the decoded original by default. Use `--no-quote` to omit that quote. Saving a reply does not mark the source as seen or answered, and only files explicitly named with `--attach` are added; attachments from the source message are not copied.
 
-Confirmed success prints one stable line with these labeled fields:
+Each `--attach` value identifies one local regular file. Slashmail does not expand globs, search directories, or fetch URLs. Symlinks are accepted when they resolve to regular files, but the transmitted filename is always the valid Unicode basename supplied by the caller, including a symlink's basename; local directory paths are not included. Missing, unreadable, non-regular, non-Unicode, control-bearing, and unsafe Unicode display names are rejected before Slashmail reads the draft body or connects to IMAP.
+
+Slashmail snapshots all attachments into memory before reading stdin or connecting to IMAP. Peak memory can be several times the files' aggregate size while MIME encoding is built, and there is no fixed supported-size guarantee. Ordinary file-read or allocation failures abort before APPEND, but recovery from a process-level out-of-memory termination is not guaranteed. The mailbox provider can still reject a large APPEND.
+
+Successful creation saves the complete message with exactly one APPEND. Confirmed success prints one stable line with these labeled fields:
 
 ```text
 Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc=bob@example.com | Bcc= | Subject=Re: Project update
 ```
 
-The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
+The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. Attachment names are not added to the receipt. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
 
-Draft support intentionally does not include sending, forwarding, attachments, raw MIME, sender aliases, arbitrary headers, editing existing drafts, or aggregate `--all-accounts` creation.
+Draft support intentionally does not include sending, forwarding, raw MIME, sender aliases, arbitrary headers, editing existing drafts, or aggregate `--all-accounts` creation. Attachment support is limited to explicit local files: no globs, recursive discovery, URLs, stdin-sourced files, inline/CID parts, custom transmitted names or MIME types, or copying attachments from a source message.
 
 ### Filter options
 

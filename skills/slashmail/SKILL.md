@@ -47,8 +47,8 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 
 | Command | Description | Extra flags |
 |---------|-------------|-------------|
-| `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`; `--subject`, `--html`, `--drafts-folder` |
-| `reply UID` | Save an unsent reply-all draft; body is read from stdin | `--folder`, `--html`, `--no-quote`, `--drafts-folder` |
+| `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`, `--attach PATH`; `--subject`, `--html`, `--drafts-folder` |
+| `reply UID` | Save an unsent reply-all draft; body is read from stdin | repeatable `--attach PATH`; `--folder`, `--html`, `--no-quote`, `--drafts-folder` |
 | `search` | Retrieve messages (sorted newest-first) | `--json` |
 | `read` | Display message content in terminal | — |
 | `count` | Fast count without fetching content | `--json` |
@@ -65,6 +65,7 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 - **Never pass `--yes`** without showing the dry-run results to the user first and getting confirmation.
 - **Use `--limit`** when the user asks for "recent" or "latest" messages to avoid fetching everything.
 - **Draft and reply save immediately but never send.** Do not describe a saved draft as sent.
+- **Attach only exact user-authorized paths.** Pass each literal local file path in its own `--attach` occurrence. Never expand globs, search directories, auto-discover files, or substitute a similarly named file.
 - **Inspect Drafts before retrying an ambiguous save.** If slashmail says the draft was saved but its UID is unresolved, or the APPEND outcome is unknown, retrying may create a duplicate.
 - **Treat receipts as sensitive.** The stable success line includes Account, Folder, UID, To, Cc, Bcc, and Subject; do not place recipient metadata in public logs.
 
@@ -74,14 +75,19 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 - Plain text is the default. Add `--html` only when the supplied stdin body is HTML.
 - For a new draft, pass at least one `--to`. Each `--to`, `--cc`, or `--bcc` occurrence is exactly one RFC mailbox; repeat flags for multiple recipients instead of comma-splitting.
 - For a reply, select one account, source `--folder` (default: the account's configured default folder), and source UID. Slashmail derives reply-all recipients, subject, and thread headers; there is no sender-only or recipient-override mode.
+- Repeat `--attach PATH` for each exact local regular file. Quote paths containing spaces or shell metacharacters. Symlinks to regular files are accepted and expose the caller-supplied symlink basename; non-Unicode, control-bearing, and unsafe Unicode display names are rejected.
+- Attachments are eagerly snapshotted before stdin or IMAP work. Memory use can be several times their aggregate size, there is no fixed supported-size guarantee, and the mailbox provider may reject a large draft. Ordinary local failures abort before APPEND; do not promise recovery from process-level out-of-memory termination.
+- A reply attaches only the explicitly supplied local files; it never copies attachments from the source message. Successful creation still performs exactly one APPEND. Receipts retain the existing Account, Folder, UID, To, Cc, Bcc, and Subject fields and do not list attachments.
 - Replies quote the decoded original by default. Add `--no-quote` only when the user asks to omit it.
 - Use `--account NAME` for a named account and `--drafts-folder NAME` only when the destination must override configuration and server discovery.
-- Scope is save-only: no sending, forwarding, attachments, raw MIME, aliases, arbitrary headers, editing existing drafts, or `--all-accounts` drafting.
+- Scope is save-only: no sending, forwarding, raw MIME, aliases, arbitrary headers, editing existing drafts, or `--all-accounts` drafting. Attachment support does not accept globs, recursive discovery, URLs, stdin-sourced files, inline/CID parts, custom names or MIME types, or source-message attachments.
 
 ```bash
 # New plain-text draft
 printf '%s\n' 'Please review the proposal.' |
-  slashmail draft --to client@example.com --subject "Proposal"
+  slashmail draft --to client@example.com --subject "Proposal" \
+    --attach './documents/client proposal.pdf' \
+    --attach './charts/revenue.png'
 
 # New HTML draft using a named account
 printf '%s\n' '<p>Please review the <strong>proposal</strong>.</p>' |
@@ -95,7 +101,8 @@ printf '%s\n' 'Draft body' |
 
 # Reply-all to UID 1842 in INBOX/default folder, with the original quoted
 printf '%s\n' 'Thanks, this looks good.' |
-  slashmail reply --account work 1842
+  slashmail reply --account work \
+    --attach './documents/revised proposal.pdf' 1842
 
 # Reply from another source folder without quoting
 printf '%s\n' 'Following up with one correction.' |
