@@ -53,6 +53,7 @@ slashmail [OPTIONS] <COMMAND>
 Commands:
   draft    Save a new unsent email draft
   reply    Save an unsent reply draft for one message UID
+  attachments  List or save attachments from one message UID
   search   Search messages by criteria
   read     Display the content of matching messages
   delete   Search + delete matching messages (move to Trash)
@@ -138,7 +139,7 @@ default_folder = "INBOX"
 
 When `[[accounts]]` is configured, slashmail uses `default_account` by default, or the first account if `default_account` is omitted. Use `--account <NAME>` to select one account, or `--all-accounts` to aggregate read-only commands across every account.
 
-`--all-accounts` is supported for `search`, `read`, `count`, `status`, and `quota`. Mutating commands (`delete`, `move`, `mark`) and `export` require a single account.
+`--all-accounts` is supported for `search`, `read`, `count`, `status`, and `quota`. Mutating commands (`delete`, `move`, `mark`), `export`, drafts, replies, and received-attachment inspection require a single account.
 
 Use `--config <PATH>` to specify an alternative config file location.
 
@@ -206,6 +207,30 @@ Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc
 The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. Attachment names are not added to the receipt. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
 
 Draft support intentionally does not include sending, forwarding, raw MIME, sender aliases, arbitrary headers, editing existing drafts, or aggregate `--all-accounts` creation. Attachment support is limited to explicit local files: no globs, recursive discovery, URLs, stdin-sourced files, inline/CID parts, custom transmitted names or MIME types, or copying attachments from a source message.
+
+### Received attachments
+
+`attachments <UID>` inspects exactly one message in the selected account and folder without setting its `\Seen` flag. Listing is the safe default and shows stable MIME part IDs, decoded filenames, content types, and decoded byte sizes. Use `--json` for a compact machine-readable array.
+
+```bash
+# List attachments in the account's default folder
+slashmail attachments --account work 1842
+
+# List attachments as JSON from another folder
+slashmail attachments --account work --folder Archive --json 1842
+
+# Save every attachment to a directory
+slashmail attachments --account work --save \
+  --output-dir './received files' 1842
+
+# Save selected MIME parts in the requested order
+slashmail attachments --account work --save \
+  --part 2.1 --part 3 --output-dir './received files' 1842
+```
+
+Saving is noninteractive because `--save` is explicit. Existing destinations abort the complete batch before any attachment is written; add `--force` to replace existing regular files or symlinks. Generated filenames remain direct children of the output directory, are sanitized for cross-platform use, and receive deterministic suffixes when decoded names collide.
+
+Only MIME parts declared with `Content-Disposition: attachment` are exposed. Inline/CID parts and attachments nested inside an attached message are not extracted. Slashmail fetches the complete source with `BODY.PEEK[]`, decodes attachment bytes in memory, and leaves the source message unchanged.
 
 ### Filter options
 

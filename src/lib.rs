@@ -1,3 +1,4 @@
+pub mod attachment;
 pub mod config;
 pub mod connection;
 pub mod delete;

@@ -1,4 +1,4 @@
-use slashmail::{config, connection, delete, display, draft, export, read, search};
+use slashmail::{attachment, config, connection, delete, display, draft, export, read, search};
 
 use anyhow::{bail, Context, Result};
 use clap::parser::ValueSource;
@@ -90,6 +90,8 @@ enum Commands {
     Draft(DraftArgs),
     /// Save an unsent reply draft for one message UID
     Reply(ReplyArgs),
+    /// List or save attachments from one message UID
+    Attachments(AttachmentsArgs),
     /// Search messages by criteria
     Search(SearchArgs),
     /// Display the content of matching messages
@@ -175,6 +177,37 @@ struct ReplyArgs {
     /// Destination Drafts mailbox
     #[arg(long)]
     drafts_folder: Option<String>,
+}
+
+#[derive(Parser)]
+struct AttachmentsArgs {
+    /// UID of the source message
+    #[arg(value_parser = clap::value_parser!(u32).range(1..))]
+    uid: u32,
+
+    /// Folder containing the source message
+    #[arg(short, long)]
+    folder: Option<String>,
+
+    /// Print attachment metadata as JSON
+    #[arg(long, conflicts_with = "save")]
+    json: bool,
+
+    /// Save attachments instead of listing them
+    #[arg(long)]
+    save: bool,
+
+    /// MIME part to save (repeat once per part)
+    #[arg(long, value_name = "PART", requires = "save")]
+    part: Vec<attachment::PartId>,
+
+    /// Directory for saved attachments
+    #[arg(short = 'o', long, value_name = "DIR", requires = "save")]
+    output_dir: Option<PathBuf>,
+
+    /// Replace existing regular files or symlinks
+    #[arg(long, requires = "save")]
+    force: bool,
 }
 
 #[derive(Parser)]
@@ -533,7 +566,10 @@ fn load_attachment(path: &Path) -> Result<draft::DraftAttachment> {
             )
         })?
         .to_string();
-    if filename.chars().any(disallowed_attachment_name_character) {
+    if filename
+        .chars()
+        .any(attachment::is_unsafe_filename_character)
+    {
         bail!(
             "Attachment path {} has a disallowed basename",
             safe_attachment_path(path)
@@ -601,18 +637,6 @@ fn read_attachment_bytes(file: &mut File, path: &Path) -> Result<Vec<u8>> {
     }
 }
 
-fn disallowed_attachment_name_character(character: char) -> bool {
-    character.is_control()
-        || matches!(
-            character,
-            '\u{061c}'
-                | '\u{200e}'
-                | '\u{200f}'
-                | '\u{2028}'..='\u{202e}'
-                | '\u{2066}'..='\u{2069}'
-        )
-}
-
 fn safe_attachment_path(path: &Path) -> String {
     let raw = path.as_os_str().to_string_lossy();
     let mut escaped = String::from("\"");
@@ -620,7 +644,7 @@ fn safe_attachment_path(path: &Path) -> String {
         match character {
             '\\' => escaped.push_str("\\\\"),
             '"' => escaped.push_str("\\\""),
-            character if disallowed_attachment_name_character(character) => {
+            character if attachment::is_unsafe_filename_character(character) => {
                 escaped.push_str(&format!("\\u{{{:x}}}", character as u32));
             }
             character => escaped.push(character),
@@ -689,17 +713,20 @@ fn resolve_drafts_folder(
     )
 }
 
-fn fetch_reply_source(
+fn fetch_source_message(
     session: &mut connection::ImapSession,
     folder: &str,
     uid: u32,
 ) -> Result<Vec<u8>> {
+    let safe_folder = display::sanitize_terminal_field(folder);
     session
         .examine(folder)
-        .map_err(|_| anyhow::anyhow!("Failed to examine the reply source folder"))?;
+        .map_err(|_| anyhow::anyhow!("Failed to examine source folder '{safe_folder}'"))?;
     let fetches = session
         .uid_fetch(&uid.to_string(), "BODY.PEEK[]")
-        .map_err(|_| anyhow::anyhow!("Failed to fetch the reply source message"))?;
+        .map_err(|_| {
+            anyhow::anyhow!("Failed to fetch source message UID {uid} from '{safe_folder}'")
+        })?;
     let messages = fetches
         .iter()
         .map(|fetch| draft::MessageFetch {
@@ -825,7 +852,7 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
     let mut session = factory.connect()?;
     let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
     let source_folder = args.folder.as_deref().unwrap_or(&account.default_folder);
-    let source = fetch_reply_source(&mut session, source_folder, args.uid)?;
+    let source = fetch_source_message(&mut session, source_folder, args.uid)?;
     let composed = draft::compose_reply_draft_with_attachments(
         draft::ReplyDraftInput {
             sender,
@@ -843,6 +870,52 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
     report_save_outcome(outcome?, account, &folder, &composed)
+}
+
+fn cmd_attachments(
+    session: &mut connection::ImapSession,
+    args: &AttachmentsArgs,
+    default_folder: &str,
+) -> Result<()> {
+    let folder = args.folder.as_deref().unwrap_or(default_folder);
+    let safe_folder = display::sanitize_terminal_field(folder);
+    let sp = spinner(&format!("Inspecting attachments for UID {}...", args.uid));
+    let inspected = fetch_source_message(session, folder, args.uid).and_then(|raw| {
+        attachment::attachments_from_message(&raw).with_context(|| {
+            format!(
+                "Failed to inspect attachments for UID {} in '{}'",
+                args.uid, safe_folder
+            )
+        })
+    });
+    sp.finish_and_clear();
+    let attachments = inspected?;
+
+    if !args.save {
+        if args.json {
+            println!("{}", attachment::render_attachments_json(&attachments)?);
+        } else if let Some(table) = attachment::render_attachment_table(&attachments) {
+            println!("{table}");
+        } else {
+            println!("No attachments found.");
+        }
+        return Ok(());
+    }
+
+    if attachments.is_empty() && args.part.is_empty() {
+        println!("No attachments found.");
+        return Ok(());
+    }
+
+    let output_dir = args
+        .output_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+    let saved = attachment::save_attachments(&attachments, &args.part, &output_dir, args.force)?;
+    for receipt in &saved {
+        println!("{}", attachment::render_saved_receipt(receipt));
+    }
+    Ok(())
 }
 
 fn with_account_session<T, F>(account: &config::ResolvedAccount, f: F) -> Result<T>
@@ -1711,6 +1784,12 @@ fn main() -> Result<()> {
     let result = match &cli.command {
         Commands::Draft(args) => cmd_draft(&accounts[0], args),
         Commands::Reply(args) => cmd_reply(&accounts[0], args),
+        Commands::Attachments(args) => {
+            let account = &accounts[0];
+            with_account_session(account, |session| {
+                cmd_attachments(session, args, &account.default_folder)
+            })
+        }
         Commands::Search(args) => cmd_search_accounts(&accounts, args),
         Commands::Read(args) => cmd_read_accounts(&accounts, args),
         Commands::Delete(args) => {
@@ -2315,5 +2394,92 @@ mod tests {
             mark_action_desc(true, false, true, false),
             "mark read + flag"
         );
+    }
+
+    #[test]
+    fn attachments_clap_defaults_to_listing_one_positive_uid() {
+        let cli = Cli::try_parse_from(["slashmail", "attachments", "42"]).unwrap();
+        let Commands::Attachments(args) = cli.command else {
+            panic!("expected attachments command")
+        };
+        assert_eq!(args.uid, 42);
+        assert!(args.folder.is_none());
+        assert!(!args.json);
+        assert!(!args.save);
+        assert!(args.part.is_empty());
+        assert!(args.output_dir.is_none());
+        assert!(!args.force);
+    }
+
+    #[test]
+    fn attachments_clap_accepts_folder_and_ordered_canonical_parts() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "attachments",
+            "--folder",
+            "Archive",
+            "--save",
+            "--part",
+            "2.1",
+            "--part",
+            "1",
+            "--output-dir",
+            "saved files",
+            "--force",
+            "42",
+        ])
+        .unwrap();
+        let Commands::Attachments(args) = cli.command else {
+            panic!("expected attachments command")
+        };
+        assert_eq!(args.uid, 42);
+        assert_eq!(args.folder.as_deref(), Some("Archive"));
+        assert!(args.save);
+        assert_eq!(
+            args.part
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>(),
+            ["2.1", "1"]
+        );
+        assert_eq!(args.output_dir.as_deref(), Some(Path::new("saved files")));
+        assert!(args.force);
+    }
+
+    #[test]
+    fn attachments_clap_enforces_conflicts_and_save_only_flags() {
+        assert!(
+            Cli::try_parse_from(["slashmail", "attachments", "--json", "--save", "42"]).is_err()
+        );
+        for flag in ["--part", "--output-dir"] {
+            assert!(
+                Cli::try_parse_from(["slashmail", "attachments", flag, "1", "42"]).is_err(),
+                "{flag}"
+            );
+        }
+        assert!(Cli::try_parse_from(["slashmail", "attachments", "--force", "42"]).is_err());
+    }
+
+    #[test]
+    fn attachments_clap_rejects_zero_and_noncanonical_parts() {
+        assert!(Cli::try_parse_from(["slashmail", "attachments", "0"]).is_err());
+        for invalid in ["0", "01", "1.0", "1..2", "+1", " 1"] {
+            assert!(Cli::try_parse_from([
+                "slashmail",
+                "attachments",
+                "--save",
+                "--part",
+                invalid,
+                "42"
+            ])
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn attachments_rejects_all_accounts() {
+        let cli =
+            Cli::try_parse_from(["slashmail", "--all-accounts", "attachments", "42"]).unwrap();
+        assert!(reject_all_accounts_if_unsupported(&cli).is_err());
     }
 }

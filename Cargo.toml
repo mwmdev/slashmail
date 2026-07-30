@@ -1,6 +1,6 @@
 [package]
 name = "slashmail"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 rust-version = "1.83"
 description = "CLI for searching, managing, drafting, and bulk-operating on emails via IMAP"
@@ -34,7 +34,7 @@ regex = "1"
 zeroize = "1"
 openssl = { version = "0.10", features = ["vendored"], optional = true }
 html2text = "0.15.5"
-lettre = { version = "=0.11.22", default-features = false, features = ["builder", "mime03"] }
+lettre = { version = "=0.11.19", default-features = false, features = ["builder", "mime03"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -44,7 +44,7 @@ vendored-openssl = ["openssl"]
 integration-tests = []
 
 [dev-dependencies]
-lettre = { version = "=0.11.22", default-features = false, features = ["builder", "mime03", "smtp-transport", "native-tls"] }
+lettre = { version = "=0.11.19", default-features = false, features = ["builder", "mime03", "smtp-transport", "native-tls"] }
 tempfile = ">=3,<3.25"
 
 [profile.release]

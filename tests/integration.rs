@@ -7,8 +7,8 @@ use std::thread;
 use std::time::Duration;
 use std::{path::Path, process::Command};
 
-use lettre::message::header::ContentType;
-use lettre::message::{Attachment, MultiPart, SinglePart};
+use lettre::message::header::{self, ContentType};
+use lettre::message::{Attachment, Body, MultiPart, SinglePart};
 use lettre::transport::smtp::client::Tls;
 use lettre::{Message, SmtpTransport, Transport};
 use mailparse::MailHeaderMap;
@@ -104,6 +104,26 @@ fn send_email_with_cc_and_attachment(
         )
         .unwrap();
 
+    send_test_message(&email);
+}
+
+fn send_email_with_attachments(to: &str, subject: &str, body: &str, attachments: &[(&str, &[u8])]) {
+    let mut multipart = MultiPart::mixed().singlepart(SinglePart::plain(body.to_string()));
+    for (filename, bytes) in attachments {
+        let body =
+            Body::new_with_encoding((*bytes).to_vec(), header::ContentTransferEncoding::Base64)
+                .unwrap();
+        multipart = multipart.singlepart(Attachment::new((*filename).to_string()).body(
+            body,
+            ContentType::parse("application/octet-stream").unwrap(),
+        ));
+    }
+    let email = Message::builder()
+        .from("sender@localhost".parse().unwrap())
+        .to(user_email(to).parse().unwrap())
+        .subject(subject)
+        .multipart(multipart)
+        .unwrap();
     send_test_message(&email);
 }
 
@@ -2059,5 +2079,211 @@ fn search_size_range() {
     );
     assert!(results[0].subject.contains("Medium msg"));
 
+    session.logout().unwrap();
+}
+
+#[test]
+fn cli_lists_and_saves_received_attachments() {
+    let owner = unique_user();
+    let binary = [0x00, 0xff, 0x11, 0x80, 0x0d, 0x0a];
+    send_email_with_attachments(
+        &owner,
+        "Received attachments",
+        "body",
+        &[("résumé.bin", &binary), ("résumé.bin", &[])],
+    );
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&owner);
+    let (uid, source_raw, source_flags) = only_message_in(&mut session, "INBOX");
+    assert!(!source_flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Seen")));
+    session.logout().unwrap();
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    write_multi_account_config(&config_path, &[("personal", &owner)]);
+
+    let output = slashmail_cmd(&config_path, &[("personal", &owner)])
+        .args([
+            "--account",
+            "personal",
+            "attachments",
+            "--folder",
+            "INBOX",
+            "--json",
+            &uid.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(output);
+    let rows: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(rows.as_array().unwrap().len(), 2);
+    assert_eq!(rows[0]["part"], "2");
+    assert_eq!(rows[0]["filename"], "résumé.bin");
+    assert_eq!(rows[0]["content_type"], "application/octet-stream");
+    assert_eq!(rows[0]["size"], binary.len());
+    assert_eq!(rows[1]["part"], "3");
+    assert_eq!(rows[1]["filename"], "résumé.bin");
+    assert_eq!(rows[1]["content_type"], "application/octet-stream");
+    assert_eq!(rows[1]["size"], 0);
+
+    let selected_dir = tempfile::tempdir().unwrap();
+    let output = slashmail_cmd(&config_path, &[("personal", &owner)])
+        .args([
+            "--account",
+            "personal",
+            "attachments",
+            "--folder",
+            "INBOX",
+            "--save",
+            "--part",
+            "3",
+        ])
+        .arg("--output-dir")
+        .arg(selected_dir.path())
+        .arg(uid.to_string())
+        .output()
+        .unwrap();
+    assert_cmd_success(output);
+    assert_eq!(
+        std::fs::read(selected_dir.path().join("résumé.bin")).unwrap(),
+        Vec::<u8>::new()
+    );
+
+    let save_all = |output_dir: &Path| {
+        let mut command = slashmail_cmd(&config_path, &[("personal", &owner)]);
+        command.args([
+            "--account",
+            "personal",
+            "attachments",
+            "--folder",
+            "INBOX",
+            "--save",
+        ]);
+        command
+            .arg("--output-dir")
+            .arg(output_dir)
+            .arg(uid.to_string());
+        command
+    };
+
+    let all_dir = tempfile::tempdir().unwrap();
+    assert_cmd_success(save_all(all_dir.path()).output().unwrap());
+    assert_eq!(
+        std::fs::read(all_dir.path().join("résumé.bin")).unwrap(),
+        binary
+    );
+    assert_eq!(
+        std::fs::read(all_dir.path().join("résumé (2).bin")).unwrap(),
+        Vec::<u8>::new()
+    );
+
+    let collision_dir = tempfile::tempdir().unwrap();
+    let collision_target = collision_dir.path().join("résumé (2).bin");
+    let collision_sentinel = b"preserve later collision";
+    std::fs::write(&collision_target, collision_sentinel).unwrap();
+    let collision = save_all(collision_dir.path()).output().unwrap();
+    assert!(!collision.status.success());
+    assert!(String::from_utf8_lossy(&collision.stderr).contains("already exists"));
+    assert!(!collision_dir.path().join("résumé.bin").exists());
+    assert_eq!(
+        std::fs::read(&collision_target).unwrap(),
+        collision_sentinel
+    );
+
+    let first_target = all_dir.path().join("résumé.bin");
+    let second_target = all_dir.path().join("résumé (2).bin");
+    std::fs::write(&first_target, b"replace first").unwrap();
+    std::fs::write(&second_target, b"replace second").unwrap();
+    let mut force = save_all(all_dir.path());
+    force.arg("--force");
+    assert_cmd_success(force.output().unwrap());
+    assert_eq!(std::fs::read(&first_target).unwrap(), binary);
+    assert_eq!(std::fs::read(&second_target).unwrap(), Vec::<u8>::new());
+
+    let mut session = imap_connect(&owner);
+    let (uid_after, raw_after, flags_after) = only_message_in(&mut session, "INBOX");
+    assert_eq!(uid_after, uid);
+    assert_eq!(raw_after, source_raw);
+    assert_eq!(flags_after, source_flags);
+    assert!(!flags_after
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Seen")));
+    session.logout().unwrap();
+}
+
+#[test]
+fn cli_sanitizes_received_attachment_paths_without_mutating_source() {
+    let owner = unique_user();
+    let bytes = b"path traversal payload";
+    send_email_with_attachments(
+        &owner,
+        "Unsafe received attachment",
+        "body",
+        &[("../escape.bin", bytes)],
+    );
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&owner);
+    let (uid, source_raw, source_flags) = only_message_in(&mut session, "INBOX");
+    assert!(!source_flags
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Seen")));
+    session.logout().unwrap();
+
+    let config_dir = tempfile::tempdir().unwrap();
+    let config_path = config_dir.path().join("config.toml");
+    write_multi_account_config(&config_path, &[("personal", &owner)]);
+    let parent = tempfile::tempdir().unwrap();
+    let output_dir = parent.path().join("attachments");
+
+    let listing = slashmail_cmd(&config_path, &[("personal", &owner)])
+        .args([
+            "--account",
+            "personal",
+            "attachments",
+            "--folder",
+            "INBOX",
+            "--json",
+            &uid.to_string(),
+        ])
+        .output()
+        .unwrap();
+    let stdout = assert_cmd_success(listing);
+    let rows: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(rows[0]["part"], "2");
+    assert_eq!(rows[0]["filename"], "../escape.bin");
+    assert_eq!(rows[0]["size"], bytes.len());
+
+    let mut command = slashmail_cmd(&config_path, &[("personal", &owner)]);
+    command.args([
+        "--account",
+        "personal",
+        "attachments",
+        "--folder",
+        "INBOX",
+        "--save",
+        "--part",
+        "2",
+    ]);
+    command
+        .arg("--output-dir")
+        .arg(&output_dir)
+        .arg(uid.to_string());
+    assert_cmd_success(command.output().unwrap());
+
+    assert_eq!(std::fs::read(output_dir.join("escape.bin")).unwrap(), bytes);
+    assert!(!parent.path().join("escape.bin").exists());
+
+    let mut session = imap_connect(&owner);
+    let (uid_after, raw_after, flags_after) = only_message_in(&mut session, "INBOX");
+    assert_eq!(uid_after, uid);
+    assert_eq!(raw_after, source_raw);
+    assert_eq!(flags_after, source_flags);
+    assert!(!flags_after
+        .iter()
+        .any(|flag| flag.eq_ignore_ascii_case("\\Seen")));
     session.logout().unwrap();
 }

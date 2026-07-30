@@ -1,5 +1,5 @@
+use crate::attachment;
 use anyhow::{Context, Result};
-use mailparse::DispositionType;
 use std::collections::HashMap;
 
 use crate::connection::ImapSession;
@@ -189,8 +189,7 @@ fn render_attachment_summary(attachments: &[String]) -> Option<String> {
 }
 
 fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
-    let mut attachments = Vec::new();
-    collect_attachments(parsed, &mut attachments);
+    let attachments = attachment::attachment_names(parsed);
 
     (display_text_body(parsed), attachments)
 }
@@ -223,7 +222,7 @@ fn collect_display_text_parts(
 ) {
     let mime = part.ctype.mimetype.to_lowercase();
 
-    if is_attachment(part) {
+    if attachment::is_attachment(part) {
         return;
     }
 
@@ -287,7 +286,7 @@ fn collect_text_parts(
 ) -> Result<()> {
     let mime = part.ctype.mimetype.to_lowercase();
 
-    if is_attachment(part) {
+    if attachment::is_attachment(part) {
         return Ok(());
     }
 
@@ -305,37 +304,6 @@ fn collect_text_parts(
     }
 
     Ok(())
-}
-
-fn collect_attachments(part: &mailparse::ParsedMail, attachments: &mut Vec<String>) {
-    if let Some(name) = attachment_name(part) {
-        attachments.push(name);
-        return;
-    }
-
-    for sub in &part.subparts {
-        collect_attachments(sub, attachments);
-    }
-}
-
-fn is_attachment(part: &mailparse::ParsedMail) -> bool {
-    part.get_content_disposition().disposition == DispositionType::Attachment
-}
-
-fn attachment_name(part: &mailparse::ParsedMail) -> Option<String> {
-    if !is_attachment(part) {
-        return None;
-    }
-
-    let disposition = part.get_content_disposition();
-    Some(
-        disposition
-            .params
-            .get("filename")
-            .cloned()
-            .or_else(|| part.ctype.params.get("name").cloned())
-            .unwrap_or_else(|| "unnamed".to_string()),
-    )
 }
 
 #[cfg(test)]
