@@ -7,9 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-07-30
+
 ### Added
 
 - Repeatable `--attach PATH` support for new-message and reply drafts, with explicit local-file preflight, body-first MIME attachments, Unicode basenames, and unchanged unsent-draft receipts
+- `attachments <UID>` command for listing received MIME attachments as a terminal table or JSON and explicitly saving all or selected stable part IDs
+
+### Security
+
+- Received-attachment extraction uses byte-exact transfer decoding, direct-child filename sanitization, batch collision preflight, exclusive file creation, and explicit `--force` replacement without marking the source message as seen
 
 ## [0.5.0] - 2026-07-25
 
@@ -114,7 +121,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
-[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/mwmdev/slashmail/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mwmdev/slashmail/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.4.0
 [0.3.2]: https://github.com/mwmdev/slashmail/releases/tag/v0.3.2
