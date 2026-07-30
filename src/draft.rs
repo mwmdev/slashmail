@@ -187,13 +187,13 @@ pub fn require_exact_source(fetches: Vec<MessageFetch>, requested_uid: u32) -> R
         .filter(|fetch| fetch.uid == Some(requested_uid));
     let fetch = matching
         .next()
-        .ok_or_else(|| anyhow!("Reply source UID {requested_uid} was not found"))?;
+        .ok_or_else(|| anyhow!("Source message UID {requested_uid} was not found"))?;
     if matching.next().is_some() {
-        bail!("Reply source UID {requested_uid} returned more than one message");
+        bail!("Source message UID {requested_uid} returned more than one message");
     }
     fetch
         .body
-        .ok_or_else(|| anyhow!("Reply source UID {requested_uid} has no message body"))
+        .ok_or_else(|| anyhow!("Source message UID {requested_uid} has no message body"))
 }
 
 pub fn save_composed_draft<F>(
