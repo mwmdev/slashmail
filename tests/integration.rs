@@ -2152,8 +2152,7 @@ fn cli_lists_and_saves_received_attachments() {
         Vec::<u8>::new()
     );
 
-    let all_dir = tempfile::tempdir().unwrap();
-    let save_all = || {
+    let save_all = |output_dir: &Path| {
         let mut command = slashmail_cmd(&config_path, &[("personal", &owner)]);
         command.args([
             "--account",
@@ -2165,11 +2164,13 @@ fn cli_lists_and_saves_received_attachments() {
         ]);
         command
             .arg("--output-dir")
-            .arg(all_dir.path())
+            .arg(output_dir)
             .arg(uid.to_string());
         command
     };
-    assert_cmd_success(save_all().output().unwrap());
+
+    let all_dir = tempfile::tempdir().unwrap();
+    assert_cmd_success(save_all(all_dir.path()).output().unwrap());
     assert_eq!(
         std::fs::read(all_dir.path().join("résumé.bin")).unwrap(),
         binary
@@ -2179,20 +2180,30 @@ fn cli_lists_and_saves_received_attachments() {
         Vec::<u8>::new()
     );
 
-    let collision = save_all().output().unwrap();
+    let collision_dir = tempfile::tempdir().unwrap();
+    let collision_target = collision_dir.path().join("résumé (2).bin");
+    let collision_sentinel = b"preserve later collision";
+    std::fs::write(&collision_target, collision_sentinel).unwrap();
+    let collision = save_all(collision_dir.path()).output().unwrap();
     assert!(!collision.status.success());
     assert!(String::from_utf8_lossy(&collision.stderr).contains("already exists"));
+    assert!(!collision_dir.path().join("résumé.bin").exists());
     assert_eq!(
-        std::fs::read(all_dir.path().join("résumé.bin")).unwrap(),
-        binary
+        std::fs::read(&collision_target).unwrap(),
+        collision_sentinel
     );
 
-    let mut force = save_all();
+    let first_target = all_dir.path().join("résumé.bin");
+    let second_target = all_dir.path().join("résumé (2).bin");
+    std::fs::write(&first_target, b"replace first").unwrap();
+    std::fs::write(&second_target, b"replace second").unwrap();
+    let mut force = save_all(all_dir.path());
     force.arg("--force");
     assert_cmd_success(force.output().unwrap());
+    assert_eq!(std::fs::read(&first_target).unwrap(), binary);
     assert_eq!(
-        std::fs::read(all_dir.path().join("résumé.bin")).unwrap(),
-        binary
+        std::fs::read(&second_target).unwrap(),
+        Vec::<u8>::new()
     );
 
     let mut session = imap_connect(&owner);
