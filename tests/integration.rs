@@ -2201,10 +2201,7 @@ fn cli_lists_and_saves_received_attachments() {
     force.arg("--force");
     assert_cmd_success(force.output().unwrap());
     assert_eq!(std::fs::read(&first_target).unwrap(), binary);
-    assert_eq!(
-        std::fs::read(&second_target).unwrap(),
-        Vec::<u8>::new()
-    );
+    assert_eq!(std::fs::read(&second_target).unwrap(), Vec::<u8>::new());
 
     let mut session = imap_connect(&owner);
     let (uid_after, raw_after, flags_after) = only_message_in(&mut session, "INBOX");
