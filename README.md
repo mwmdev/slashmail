@@ -149,88 +149,68 @@ The draft destination is resolved in this order: command `--drafts-folder`, the 
 
 ### Email drafts
 
-`draft` and `reply` save an unsent message immediately with the IMAP `\Draft` flag. They do not send mail. The new body comes exclusively from stdin and is plain text unless `--html` is present. Repeat `--attach PATH` to add exact local files in the order they should appear in the draft.
-
-Each `--to`, `--cc`, or `--bcc` occurrence accepts one RFC mailbox. Repeat the flag for multiple recipients; do not combine multiple mailboxes in one comma-separated value because a quoted display name can itself contain a comma.
+`draft` and `reply` save unsent messages with the IMAP `\Draft` flag; they do
+not send mail. The body is read from stdin and is plain text unless `--html`
+is used. Repeat `--to`, `--cc`, `--bcc`, or `--attach` to add multiple
+recipients or local files.
 
 ```bash
-# New plain-text draft
+# Create a draft with an attachment
 printf '%s\n' 'Please review the attached proposal.' |
-  slashmail draft --to client@example.com --subject "Proposal" \
-    --attach './documents/client proposal.pdf' \
-    --attach './charts/revenue.png'
-
-# Multiple recipients and a named account
-printf '%s\n' 'Here is the project update.' |
   slashmail draft --account work \
-    --to 'Alice Example <alice@example.com>' \
-    --to bob@example.com \
-    --cc manager@example.com \
-    --bcc archive@example.com \
-    --subject "Project update"
+    --to client@example.com \
+    --subject "Proposal" \
+    --attach './documents/client proposal.pdf'
 
-# New HTML draft
+# Reply to UID 1842 without quoting the original message
+printf '%s\n' 'Thanks, this looks good to me.' |
+  slashmail reply --account work --no-quote 1842
+
+# Create an HTML draft
 printf '%s\n' '<p>Please review the <strong>proposal</strong>.</p>' |
   slashmail draft --html --to client@example.com --subject "Proposal"
-
-# Save to an explicit destination instead of configured/server discovery
-printf '%s\n' 'Draft body' |
-  slashmail draft --to client@example.com --drafts-folder "Saved/Drafts"
-
-# Reply to UID 1842 in the account's default folder
-printf '%s\n' 'Thanks, this looks good to me.' |
-  slashmail reply --account work \
-    --attach './documents/revised proposal.pdf' 1842
-
-# Reply to a UID in another source folder and omit the original quote
-printf '%s\n' 'Following up with one correction.' |
-  slashmail reply --account work --folder Archive --no-quote 1842
-
-# HTML reply saved to an explicit Drafts destination
-printf '%s\n' '<p>Thanks, this looks good to me.</p>' |
-  slashmail reply --account work --html \
-    --drafts-folder "Saved/Drafts" 1842
 ```
 
-A reply targets exactly one source message by selected account, source `--folder` (or that account's `default_folder`), and UID. Slashmail derives the subject and recipients automatically using reply-all behavior, excludes the configured sender, preserves available thread metadata, and quotes the decoded original by default. Use `--no-quote` to omit that quote. Saving a reply does not mark the source as seen or answered, and only files explicitly named with `--attach` are added; attachments from the source message are not copied.
+Replies use reply-all behavior, exclude the configured sender, preserve
+available thread metadata, and quote the original by default. Use `--folder`
+to select the source folder and `--no-quote` to omit the quote. The source
+message remains unchanged.
 
-Each `--attach` value identifies one local regular file. Slashmail does not expand globs, search directories, or fetch URLs. Symlinks are accepted when they resolve to regular files, but the transmitted filename is always the valid Unicode basename supplied by the caller, including a symlink's basename; local directory paths are not included. Missing, unreadable, non-regular, non-Unicode, control-bearing, and unsafe Unicode display names are rejected before Slashmail reads the draft body or connects to IMAP.
+Each `--attach` value must name a local regular file. Globs, directories, and
+URLs are not supported, and attachments from the original message are not
+copied into replies. Files are loaded into memory while the MIME message is
+built, so large attachments may be limited by available memory or the mailbox
+provider.
 
-Slashmail snapshots all attachments into memory before reading stdin or connecting to IMAP. Peak memory can be several times the files' aggregate size while MIME encoding is built, and there is no fixed supported-size guarantee. Ordinary file-read or allocation failures abort before APPEND, but recovery from a process-level out-of-memory termination is not guaranteed. The mailbox provider can still reject a large APPEND.
-
-Successful creation saves the complete message with exactly one APPEND. Confirmed success prints one stable line with these labeled fields:
-
-```text
-Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc=bob@example.com | Bcc= | Subject=Re: Project update
-```
-
-The receipt contains recipient metadata, including Bcc addresses, so avoid copying it into public logs. Attachment names are not added to the receipt. If slashmail reports that the draft was saved but its UID could not be resolved, or that the APPEND outcome is unknown, inspect the Drafts mailbox before retrying. An automatic retry could create a duplicate.
-
-Draft support intentionally does not include sending, forwarding, raw MIME, sender aliases, arbitrary headers, editing existing drafts, or aggregate `--all-accounts` creation. Attachment support is limited to explicit local files: no globs, recursive discovery, URLs, stdin-sourced files, inline/CID parts, custom transmitted names or MIME types, or copying attachments from a source message.
+On success, slashmail prints the account, Drafts folder, UID, recipients, and
+subject. This receipt may contain Bcc addresses, so avoid copying it into
+public logs. If the APPEND outcome is reported as unknown, inspect the Drafts
+folder before retrying to avoid creating a duplicate.
 
 ### Received attachments
 
-`attachments <UID>` inspects exactly one message in the selected account and folder without setting its `\Seen` flag. Listing is the safe default and shows stable MIME part IDs, decoded filenames, content types, and decoded byte sizes. Use `--json` for a compact machine-readable array.
+`attachments <UID>` lists attachments from one message without marking it as
+seen. The output includes MIME part IDs, filenames, content types, and decoded
+sizes; add `--json` for machine-readable output.
 
 ```bash
-# List attachments in the account's default folder
+# List attachments
 slashmail attachments --account work 1842
 
-# List attachments as JSON from another folder
-slashmail attachments --account work --folder Archive --json 1842
-
-# Save every attachment to a directory
+# Save every attachment
 slashmail attachments --account work --save \
   --output-dir './received files' 1842
 
-# Save selected MIME parts in the requested order
+# Save selected MIME parts
 slashmail attachments --account work --save \
   --part 2.1 --part 3 --output-dir './received files' 1842
 ```
 
-Saving is noninteractive because `--save` is explicit. Existing destinations abort the complete batch before any attachment is written; add `--force` to replace existing regular files or symlinks. Generated filenames remain direct children of the output directory, are sanitized for cross-platform use, and receive deterministic suffixes when decoded names collide.
-
-Only MIME parts declared with `Content-Disposition: attachment` are exposed. Inline/CID parts and attachments nested inside an attached message are not extracted. Slashmail fetches the complete source with `BODY.PEEK[]`, decodes attachment bytes in memory, and leaves the source message unchanged.
+Saving aborts before writing anything if a destination already exists. Add
+`--force` to replace existing files. Filenames are sanitized and kept inside
+the output directory. Only parts declared as attachments are exposed;
+inline/CID parts and attachments nested inside another attached message are
+not extracted.
 
 ### Filter options
 
@@ -408,46 +388,6 @@ Once installed, prompts like these just work:
 ```
 
 Destructive operations always dry-run first and ask for confirmation.
-
-## Releasing
-
-Releases are tag-driven. The release workflow validates that the tag matches
-the crate version, builds five platform archives, publishes to crates.io, and
-only then creates the GitHub release.
-
-1. Update `Cargo.toml`, `Cargo.lock`, and `CHANGELOG.md` in a release-preparation
-   pull request.
-2. Run the same publishability checks used by CI:
-
-   ```bash
-   cargo test --locked --features vendored-openssl
-   cargo package --locked --features vendored-openssl
-   cargo publish --dry-run --locked --features vendored-openssl
-   ```
-
-3. Merge the pull request only after CI passes.
-4. Tag the exact merged `origin/main` commit and push the tag:
-
-   ```bash
-   VERSION=0.5.0
-   git fetch origin main --tags
-   git show origin/main:Cargo.toml | grep "^version = \"${VERSION}\"$"
-   git tag "v${VERSION}" origin/main
-   git push origin "v${VERSION}"
-   ```
-
-5. Watch the `Release` workflow and verify the GitHub release has all five
-   archives and crates.io lists the new version:
-
-   ```bash
-   run_id="$(gh run list --workflow release.yml --limit 1 --json databaseId --jq '.[0].databaseId')"
-   gh run watch "${run_id}" --exit-status
-   gh release view "v${VERSION}"
-   cargo info "slashmail@${VERSION}"
-   ```
-
-The repository must have a valid `CARGO_REGISTRY_TOKEN` Actions secret. Never
-push the release tag before the release-preparation commit is on `main`.
 
 ## Tested with
 
