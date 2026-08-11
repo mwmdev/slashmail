@@ -76,10 +76,6 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "account")]
     all_accounts: bool,
 
-    /// IMAP password (or SLASHMAIL_PASS env; prompts if missing)
-    #[arg(skip)]
-    _pass_placeholder: (),
-
     #[command(subcommand)]
     command: Commands,
 }
