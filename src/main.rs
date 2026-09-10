@@ -386,11 +386,11 @@ struct MarkArgs {
 
     /// Set \Flagged
     #[arg(long)]
-    flagged: bool,
+    set_flagged: bool,
 
     /// Remove \Flagged
     #[arg(long)]
-    unflagged: bool,
+    clear_flagged: bool,
 
     /// Limit number of messages to act on
     #[arg(short = 'n', long)]
@@ -1333,13 +1333,13 @@ fn cmd_export(
 
 fn validate_mark_flags(read: bool, unread: bool, flagged: bool, unflagged: bool) -> Result<()> {
     if !read && !unread && !flagged && !unflagged {
-        bail!("Specify at least one flag: --read, --unread, --flagged, --unflagged");
+        bail!("Specify at least one flag: --read, --unread, --set-flagged, --clear-flagged");
     }
     if read && unread {
         bail!("Cannot use --read and --unread together");
     }
     if flagged && unflagged {
-        bail!("Cannot use --flagged and --unflagged together");
+        bail!("Cannot use --set-flagged and --clear-flagged together");
     }
     Ok(())
 }
@@ -1384,7 +1384,7 @@ fn cmd_mark(
     default_folder: &str,
     account_name: Option<&str>,
 ) -> Result<()> {
-    validate_mark_flags(args.read, args.unread, args.flagged, args.unflagged)?;
+    validate_mark_flags(args.read, args.unread, args.set_flagged, args.clear_flagged)?;
 
     let criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
@@ -1403,7 +1403,8 @@ fn cmd_mark(
 
     display::display_messages(&messages);
 
-    let action_desc = mark_action_desc(args.read, args.unread, args.flagged, args.unflagged);
+    let action_desc =
+        mark_action_desc(args.read, args.unread, args.set_flagged, args.clear_flagged);
 
     if args.dry_run {
         println!(
@@ -1426,7 +1427,7 @@ fn cmd_mark(
         }
     }
 
-    let store_ops = mark_store_ops(args.read, args.unread, args.flagged, args.unflagged);
+    let store_ops = mark_store_ops(args.read, args.unread, args.set_flagged, args.clear_flagged);
 
     let sp = spinner("Updating flags...");
 
@@ -2368,6 +2369,32 @@ mod tests {
             assert!(!rendered.contains("Content-Type"));
             assert!(!rendered.contains("super-secret-password"));
         }
+    }
+
+    #[test]
+    fn mark_clap_separates_flag_filter_from_flag_action() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "mark",
+            "--all-folders",
+            "--from",
+            "billing@",
+            "--subject",
+            "invoice",
+            "--since",
+            "3m",
+            "--unseen",
+            "--set-flagged",
+        ])
+        .unwrap();
+        let Commands::Mark(args) = cli.command else {
+            panic!("expected mark command")
+        };
+        assert!(args.filter.all_folders);
+        assert!(args.filter.unseen);
+        assert!(!args.filter.flagged);
+        assert!(args.set_flagged);
+        assert!(!args.clear_flagged);
     }
 
     #[test]

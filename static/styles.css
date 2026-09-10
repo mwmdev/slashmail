@@ -619,7 +619,7 @@ a:focus-visible {
 .example-card pre {
   position: relative;
   min-width: 0;
-  margin: auto 0 0;
+  margin: 0;
   padding: 13px 62px 13px 14px;
   overflow: hidden;
   color: #c9c9d4;

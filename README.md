@@ -261,7 +261,7 @@ Commands that modify messages (`delete`, `move`, `mark`) support:
 
 `export` supports `--yes`, `--force` (overwrite existing files), and `-o, --output-dir`.
 
-`mark` takes one or more flags: `--read`, `--unread`, `--flagged`, `--unflagged`.
+`mark` takes one or more actions: `--read`, `--unread`, `--set-flagged`, `--clear-flagged`.
 
 ## Examples
 
@@ -326,7 +326,7 @@ slashmail export -u user@example.com --subject "contract" -o ./backup
 slashmail mark -u user@example.com --from "notifications" --read
 
 # Flag important messages
-slashmail mark -u user@example.com --subject "urgent" --flagged
+slashmail mark -u user@example.com --subject "urgent" --set-flagged
 
 # Count matching messages (fast, no FETCH)
 slashmail count -u user@example.com --from "newsletter"
