@@ -1509,6 +1509,106 @@ fn mark_as_read() {
 }
 
 #[test]
+fn cli_sets_and_clears_flagged_state_with_filters() {
+    let user = unique_user();
+    send_email_from(
+        "billing@localhost",
+        &user,
+        "Invoice CLI flag test",
+        "target",
+    );
+    send_email_from(
+        "updates@localhost",
+        &user,
+        "Weekly CLI flag control",
+        "control",
+    );
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", user.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let mut set_command = slashmail_cmd(&config, &accounts);
+    set_command.args([
+        "--account",
+        "personal",
+        "mark",
+        "--all-folders",
+        "--from",
+        "billing@localhost",
+        "--subject",
+        "invoice",
+        "--since",
+        "3m",
+        "--unseen",
+        "--set-flagged",
+        "--yes",
+    ]);
+    let stdout = assert_cmd_success(set_command.output().unwrap());
+    assert!(stdout.contains("Updated 1 message(s)."));
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+    let target_uids = session
+        .uid_search("SUBJECT \"Invoice CLI flag test\"")
+        .unwrap();
+    let control_uids = session
+        .uid_search("SUBJECT \"Weekly CLI flag control\"")
+        .unwrap();
+    assert_eq!(target_uids.len(), 1);
+    assert_eq!(control_uids.len(), 1);
+    let target_uid = *target_uids.iter().next().unwrap();
+    let control_uid = *control_uids.iter().next().unwrap();
+    let target_uid_set = target_uid.to_string();
+    let control_uid_set = control_uid.to_string();
+    let target_fetches = session.uid_fetch(&target_uid_set, "FLAGS").unwrap();
+    let target_flags = target_fetches.iter().next().unwrap().flags();
+    assert!(
+        target_flags
+            .iter()
+            .any(|flag| matches!(flag, imap::types::Flag::Flagged)),
+        "target should be flagged, got: {target_flags:?}"
+    );
+    let control_fetches = session.uid_fetch(&control_uid_set, "FLAGS").unwrap();
+    let control_flags = control_fetches.iter().next().unwrap().flags();
+    assert!(
+        !control_flags
+            .iter()
+            .any(|flag| matches!(flag, imap::types::Flag::Flagged)),
+        "control should remain unflagged, got: {control_flags:?}"
+    );
+    session.logout().unwrap();
+
+    let mut clear_command = slashmail_cmd(&config, &accounts);
+    clear_command.args([
+        "--account",
+        "personal",
+        "mark",
+        "--subject",
+        "Invoice CLI flag test",
+        "--flagged",
+        "--clear-flagged",
+        "--yes",
+    ]);
+    let stdout = assert_cmd_success(clear_command.output().unwrap());
+    assert!(stdout.contains("Updated 1 message(s)."));
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+    let fetches = session.uid_fetch(&target_uid_set, "FLAGS").unwrap();
+    let flags = fetches.iter().next().unwrap().flags();
+    assert!(
+        !flags
+            .iter()
+            .any(|flag| matches!(flag, imap::types::Flag::Flagged)),
+        "target should be unflagged, got: {flags:?}"
+    );
+    session.logout().unwrap();
+}
+
+#[test]
 fn mark_as_flagged() {
     let user = unique_user();
     send_email(&user, "Flag test", "body");
