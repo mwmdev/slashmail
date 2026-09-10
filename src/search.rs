@@ -731,79 +731,22 @@ mod tests {
 
     #[test]
     fn build_query_no_criteria_returns_all() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let c = default_test_criteria();
         assert_eq!(build_query(&c).unwrap(), "ALL");
     }
 
     #[test]
     fn build_query_subject_only() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: Some("test".into()),
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.subject = Some("test".into());
         assert_eq!(build_query(&c).unwrap(), "SUBJECT \"test\"");
     }
 
     #[test]
     fn build_query_combined_fields() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: Some("invoice".into()),
-            from: Some("user@example.com".into()),
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.subject = Some("invoice".into());
+        c.from = Some("user@example.com".into());
         assert_eq!(
             build_query(&c).unwrap(),
             "SUBJECT \"invoice\" FROM \"user@example.com\""
@@ -812,27 +755,9 @@ mod tests {
 
     #[test]
     fn build_query_to_and_cc() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: Some("alice@example.com".into()),
-            cc: Some("bob@example.com".into()),
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.to = Some("alice@example.com".into());
+        c.cc = Some("bob@example.com".into());
         assert_eq!(
             build_query(&c).unwrap(),
             "TO \"alice@example.com\" CC \"bob@example.com\""
@@ -841,53 +766,16 @@ mod tests {
 
     #[test]
     fn build_query_seen() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: true,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.seen = true;
         assert_eq!(build_query(&c).unwrap(), "SEEN");
     }
 
     #[test]
     fn build_query_unseen_with_from() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: Some("alice@example.com".into()),
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: true,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.from = Some("alice@example.com".into());
+        c.unseen = true;
         assert_eq!(
             build_query(&c).unwrap(),
             "FROM \"alice@example.com\" UNSEEN"
@@ -896,27 +784,9 @@ mod tests {
 
     #[test]
     fn build_query_date_range() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: Some("2025-01-01".into()),
-            before: Some("2025-12-31".into()),
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.since = Some("2025-01-01".into());
+        c.before = Some("2025-12-31".into());
         assert_eq!(
             build_query(&c).unwrap(),
             "SINCE 1-Jan-2025 BEFORE 31-Dec-2025"
@@ -925,79 +795,22 @@ mod tests {
 
     #[test]
     fn build_query_size_filter() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: Some("1M".into()),
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.larger = Some("1M".into());
         assert_eq!(build_query(&c).unwrap(), "LARGER 1048576");
     }
 
     #[test]
     fn build_query_invalid_date_errors() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: Some("not-a-date".into()),
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.since = Some("not-a-date".into());
         assert!(build_query(&c).is_err());
     }
 
     #[test]
     fn build_query_invalid_size_errors() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: Some("abc".into()),
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.larger = Some("abc".into());
         assert!(build_query(&c).is_err());
     }
 
@@ -1082,79 +895,23 @@ mod tests {
 
     #[test]
     fn build_query_body_only() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: Some("invoice".into()),
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.body = Some("invoice".into());
         assert_eq!(build_query(&c).unwrap(), "BODY \"invoice\"");
     }
 
     #[test]
     fn build_query_text_only() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: None,
-            from: None,
-            to: None,
-            cc: None,
-            body: None,
-            text: Some("meeting".into()),
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.text = Some("meeting".into());
         assert_eq!(build_query(&c).unwrap(), "TEXT \"meeting\"");
     }
 
     #[test]
     fn build_query_body_with_subject() {
-        let c = SearchCriteria {
-            folder: "INBOX".into(),
-            all_folders: false,
-            subject: Some("report".into()),
-            from: None,
-            to: None,
-            cc: None,
-            body: Some("quarterly".into()),
-            text: None,
-            seen: false,
-            unseen: false,
-            since: None,
-            before: None,
-            larger: None,
-            smaller: None,
-            flagged: false,
-            unflagged: false,
-            answered: false,
-            draft: false,
-            limit: None,
-        };
+        let mut c = default_test_criteria();
+        c.subject = Some("report".into());
+        c.body = Some("quarterly".into());
         assert_eq!(
             build_query(&c).unwrap(),
             "SUBJECT \"report\" BODY \"quarterly\""

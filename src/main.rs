@@ -76,10 +76,6 @@ struct Cli {
     #[arg(long, global = true, conflicts_with = "account")]
     all_accounts: bool,
 
-    /// IMAP password (or SLASHMAIL_PASS env; prompts if missing)
-    #[arg(skip)]
-    _pass_placeholder: (),
-
     #[command(subcommand)]
     command: Commands,
 }
@@ -390,11 +386,11 @@ struct MarkArgs {
 
     /// Set \Flagged
     #[arg(long)]
-    flagged: bool,
+    set_flagged: bool,
 
     /// Remove \Flagged
     #[arg(long)]
-    unflagged: bool,
+    clear_flagged: bool,
 
     /// Limit number of messages to act on
     #[arg(short = 'n', long)]
@@ -446,6 +442,23 @@ impl FilterArgs {
             limit,
         }
     }
+}
+
+fn load_config_dotenv(config_path: &Path) -> Result<()> {
+    let dotenv_path = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".env");
+    if !dotenv_path.try_exists().with_context(|| {
+        format!(
+            "Failed to inspect environment file: {}",
+            dotenv_path.display()
+        )
+    })? {
+        return Ok(());
+    }
+    dotenvy::from_path(&dotenv_path)
+        .with_context(|| format!("Failed to load environment file: {}", dotenv_path.display()))
 }
 
 fn get_password_for_account(account: &config::ResolvedAccount) -> Result<String> {
@@ -1320,13 +1333,13 @@ fn cmd_export(
 
 fn validate_mark_flags(read: bool, unread: bool, flagged: bool, unflagged: bool) -> Result<()> {
     if !read && !unread && !flagged && !unflagged {
-        bail!("Specify at least one flag: --read, --unread, --flagged, --unflagged");
+        bail!("Specify at least one flag: --read, --unread, --set-flagged, --clear-flagged");
     }
     if read && unread {
         bail!("Cannot use --read and --unread together");
     }
     if flagged && unflagged {
-        bail!("Cannot use --flagged and --unflagged together");
+        bail!("Cannot use --set-flagged and --clear-flagged together");
     }
     Ok(())
 }
@@ -1371,7 +1384,7 @@ fn cmd_mark(
     default_folder: &str,
     account_name: Option<&str>,
 ) -> Result<()> {
-    validate_mark_flags(args.read, args.unread, args.flagged, args.unflagged)?;
+    validate_mark_flags(args.read, args.unread, args.set_flagged, args.clear_flagged)?;
 
     let criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
@@ -1390,7 +1403,8 @@ fn cmd_mark(
 
     display::display_messages(&messages);
 
-    let action_desc = mark_action_desc(args.read, args.unread, args.flagged, args.unflagged);
+    let action_desc =
+        mark_action_desc(args.read, args.unread, args.set_flagged, args.clear_flagged);
 
     if args.dry_run {
         println!(
@@ -1413,7 +1427,7 @@ fn cmd_mark(
         }
     }
 
-    let store_ops = mark_store_ops(args.read, args.unread, args.flagged, args.unflagged);
+    let store_ops = mark_store_ops(args.read, args.unread, args.set_flagged, args.clear_flagged);
 
     let sp = spinner("Updating flags...");
 
@@ -1762,6 +1776,9 @@ fn main() -> Result<()> {
 
     // Load config: explicit --config path > default location > empty
     let cfg = config::Config::load(cli.config.as_deref())?;
+    if let Some(config_path) = cli.config.clone().or_else(config::Config::default_path) {
+        load_config_dotenv(&config_path)?;
+    }
 
     reject_all_accounts_if_unsupported(&cli)?;
 
@@ -1872,6 +1889,48 @@ mod tests {
             trash_folder: "Trash".to_string(),
             default_folder: "INBOX".to_string(),
         }
+    }
+
+    #[test]
+    fn config_dotenv_loads_password_without_overriding_process_environment() {
+        const LOADED: &str = "SLASHMAIL_TEST_DOTENV_LOADED_8F31";
+        const EXISTING: &str = "SLASHMAIL_TEST_DOTENV_EXISTING_8F31";
+        struct RestoreEnvironment {
+            values: [(&'static str, Option<std::ffi::OsString>); 2],
+        }
+
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                for (name, value) in &self.values {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+
+        let _restore = RestoreEnvironment {
+            values: [
+                (LOADED, std::env::var_os(LOADED)),
+                (EXISTING, std::env::var_os(EXISTING)),
+            ],
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+
+        std::env::remove_var(LOADED);
+        std::env::set_var(EXISTING, "process");
+        std::fs::write(
+            directory.path().join(".env"),
+            format!("{LOADED}=from-file\n{EXISTING}=from-file\n"),
+        )
+        .unwrap();
+
+        load_config_dotenv(&config_path).unwrap();
+
+        assert_eq!(std::env::var(LOADED).unwrap(), "from-file");
+        assert_eq!(std::env::var(EXISTING).unwrap(), "process");
     }
 
     struct MustNotRead;
@@ -2310,6 +2369,32 @@ mod tests {
             assert!(!rendered.contains("Content-Type"));
             assert!(!rendered.contains("super-secret-password"));
         }
+    }
+
+    #[test]
+    fn mark_clap_separates_flag_filter_from_flag_action() {
+        let cli = Cli::try_parse_from([
+            "slashmail",
+            "mark",
+            "--all-folders",
+            "--from",
+            "billing@",
+            "--subject",
+            "invoice",
+            "--since",
+            "3m",
+            "--unseen",
+            "--set-flagged",
+        ])
+        .unwrap();
+        let Commands::Mark(args) = cli.command else {
+            panic!("expected mark command")
+        };
+        assert!(args.filter.all_folders);
+        assert!(args.filter.unseen);
+        assert!(!args.filter.flagged);
+        assert!(args.set_flagged);
+        assert!(!args.clear_flagged);
     }
 
     #[test]

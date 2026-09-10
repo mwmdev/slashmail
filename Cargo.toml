@@ -1,6 +1,6 @@
 [package]
 name = "slashmail"
-version = "0.6.0"
+version = "0.7.0"
 edition = "2021"
 rust-version = "1.83"
 description = "CLI for searching, managing, drafting, and bulk-operating on emails via IMAP"
@@ -29,6 +29,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
 dirs = "6"
+dotenvy = "0.15.7"
 indicatif = "0.17"
 regex = "1"
 zeroize = "1"

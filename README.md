@@ -76,10 +76,11 @@ Commands:
 --all-accounts     Query all configured accounts (read-only commands only)
 ```
 
-For direct/legacy connections, the password is read from `SLASHMAIL_PASS` env var or prompted interactively.
-For named accounts, set `pass_env` per account or slashmail prompts for that account.
+For direct/legacy connections, the password is read from `SLASHMAIL_PASS` or prompted interactively. Named accounts use the environment variable named by their `pass_env` setting.
 
-`draft` and `reply` are different because stdin is reserved for the message body: they never prompt for a password. Direct/legacy use requires a nonempty `SLASHMAIL_PASS`. A named account must configure `pass_env`, and the environment variable named there must be nonempty. Slashmail checks credentials before reading stdin, so a missing password cannot consume a piped draft body.
+When a config file is loaded, slashmail automatically loads `.env` from the same directory. Values already present in the process environment take precedence. A missing `.env` is ignored; an unreadable or malformed one is an error. Because `.env` contains plaintext secrets, keep it out of version control and readable only by your user account.
+
+`draft` and `reply` are different because stdin is reserved for the message body: they never prompt for a password. Direct/legacy use requires a nonempty `SLASHMAIL_PASS`. A named account must configure `pass_env`, and that variable must be nonempty in the process environment or adjacent `.env`. Slashmail checks credentials before reading stdin, so a missing password cannot consume a piped draft body.
 
 Connection options are global and can appear before or after the subcommand.
 
@@ -135,6 +136,13 @@ pass_env = "SLASHMAIL_WORK_PASS"
 sender = "Work User <user@company.com>"
 drafts_folder = "Drafts"
 default_folder = "INBOX"
+```
+
+Create `.env` beside `config.toml` with the variables named by each account's `pass_env`:
+
+```dotenv
+SLASHMAIL_PERSONAL_PASS=your-personal-password
+SLASHMAIL_WORK_PASS=your-work-password
 ```
 
 When `[[accounts]]` is configured, slashmail uses `default_account` by default, or the first account if `default_account` is omitted. Use `--account <NAME>` to select one account, or `--all-accounts` to aggregate read-only commands across every account.
@@ -253,7 +261,7 @@ Commands that modify messages (`delete`, `move`, `mark`) support:
 
 `export` supports `--yes`, `--force` (overwrite existing files), and `-o, --output-dir`.
 
-`mark` takes one or more flags: `--read`, `--unread`, `--flagged`, `--unflagged`.
+`mark` takes one or more actions: `--read`, `--unread`, `--set-flagged`, `--clear-flagged`.
 
 ## Examples
 
@@ -318,7 +326,7 @@ slashmail export -u user@example.com --subject "contract" -o ./backup
 slashmail mark -u user@example.com --from "notifications" --read
 
 # Flag important messages
-slashmail mark -u user@example.com --subject "urgent" --flagged
+slashmail mark -u user@example.com --subject "urgent" --set-flagged
 
 # Count matching messages (fast, no FETCH)
 slashmail count -u user@example.com --from "newsletter"

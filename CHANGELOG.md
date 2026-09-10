@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-10
+
+### Added
+
+- Automatic loading of password variables from `.env` beside the selected `config.toml`, while preserving values already set in the process environment
+
+### Fixed
+
+- `mark` now uses distinct `--set-flagged` and `--clear-flagged` actions so flagged and unflagged search filters can be combined with flag updates
+
 ## [0.6.0] - 2026-07-30
 
 ### Added
@@ -121,7 +131,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
-[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/mwmdev/slashmail/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mwmdev/slashmail/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mwmdev/slashmail/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mwmdev/slashmail/releases/tag/v0.4.0

@@ -9,13 +9,15 @@ Email interaction via the `slashmail` CLI, an IMAP client.
 
 **Prerequisites**: Verify `slashmail` is installed with `command -v slashmail`. If not found, install from https://github.com/mwmdev/slashmail (Rust binary — `cargo install slashmail` or download from releases). Before drafting, run `slashmail draft --help`; before replying, run `slashmail reply --help`. If the required command is unavailable, stop, report that the installed binary is stale, and suggest upgrading from a release or with Cargo. Do not substitute an arbitrary development build.
 
-**Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts can define `pass_env` and can be selected with `--account NAME`; read-only commands can use `--all-accounts`.
+**Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts define `pass_env` and can be selected with `--account NAME`; read-only commands can use `--all-accounts`.
 
-```bash
-SLASHMAIL_PASS="$SLASHMAIL_PASS" slashmail <command>
+Slashmail automatically loads `.env` beside the selected `config.toml` without overriding values already present in the process environment. Store each named account password under the variable named by `pass_env`. Keep `.env` private and out of version control.
+
+```dotenv
+SLASHMAIL_PERSONAL_PASS=your-password
 ```
 
-For `draft` and `reply`, credentials must be noninteractive because stdin is exclusively the new message body. A direct/legacy account requires a nonempty `SLASHMAIL_PASS`. A named account must configure `pass_env`, and that named environment variable must be nonempty. Slashmail resolves credentials before reading stdin and never prompts for these commands.
+For `draft` and `reply`, credentials must be noninteractive because stdin is exclusively the new message body. A direct/legacy account requires a nonempty `SLASHMAIL_PASS`. A named account must configure `pass_env`, and that variable must be nonempty in the process environment or adjacent `.env`. Slashmail resolves credentials before reading stdin and never prompts for these commands.
 
 Optional `sender` and `drafts_folder` values can be set at the top level or per named account. The account value wins, then the top-level value. If no `sender` is configured, slashmail uses `user` only when it is a valid email mailbox. Draft destination precedence is `--drafts-folder`, resolved account configuration, then exactly one selectable server mailbox marked `\Drafts`.
 

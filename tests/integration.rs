@@ -1022,7 +1022,7 @@ fn search_by_cc() {
 }
 
 #[test]
-fn search_by_unseen() {
+fn search_by_seen_and_unseen() {
     let user = unique_user();
     send_email(&user, "Unread msg", "body");
     send_email(&user, "Read msg", "body");
@@ -1048,49 +1048,19 @@ fn search_by_unseen() {
         .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Seen)")
         .unwrap();
 
-    // Search for unseen only — should find only the second message
     let mut criteria = default_criteria("INBOX");
     criteria.unseen = true;
-    let results = search::search(&mut session, &criteria).unwrap();
+    let unseen_results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(
+        unseen_results.len(),
+        1,
+        "Only the unseen message should match"
+    );
 
-    assert_eq!(results.len(), 1);
-
-    session.logout().unwrap();
-}
-
-#[test]
-fn search_by_seen() {
-    let user = unique_user();
-    send_email(&user, "Unread msg", "body");
-    send_email(&user, "Read msg", "body");
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    session.select("INBOX").unwrap();
-
-    // Clear \Seen on all messages, then set it on just the first UID.
-    // Use FLAGS.SILENT to avoid FETCH responses interfering with imap crate state.
-    let mut all_uids: Vec<u32> = session.uid_search("ALL").unwrap().into_iter().collect();
-    all_uids.sort();
-    assert_eq!(all_uids.len(), 2);
-    let uid_set = all_uids
-        .iter()
-        .map(|u| u.to_string())
-        .collect::<Vec<_>>()
-        .join(",");
-    session
-        .uid_store(&uid_set, "-FLAGS.SILENT (\\Seen)")
-        .unwrap();
-    session
-        .uid_store(&all_uids[0].to_string(), "+FLAGS.SILENT (\\Seen)")
-        .unwrap();
-
-    // Search for seen only — should find only the first message
     let mut criteria = default_criteria("INBOX");
     criteria.seen = true;
-    let results = search::search(&mut session, &criteria).unwrap();
-
-    assert_eq!(results.len(), 1);
+    let seen_results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(seen_results.len(), 1, "Only the seen message should match");
 
     session.logout().unwrap();
 }
@@ -1114,7 +1084,7 @@ fn search_with_limit() {
 }
 
 #[test]
-fn search_by_size() {
+fn search_by_larger_and_smaller() {
     let user = unique_user();
     let small_body = "tiny";
     let large_body = "x".repeat(10_000);
@@ -1125,10 +1095,23 @@ fn search_by_size() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.larger = Some("5K".to_string());
-    let results = search::search(&mut session, &criteria).unwrap();
+    let larger_results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(
+        larger_results.len(),
+        1,
+        "Only the large message should match"
+    );
+    assert!(larger_results[0].subject.contains("Large msg"));
 
-    assert_eq!(results.len(), 1, "Only the large message should match");
-    assert!(results[0].subject.contains("Large msg"));
+    let mut criteria = default_criteria("INBOX");
+    criteria.smaller = Some("5K".to_string());
+    let smaller_results = search::search(&mut session, &criteria).unwrap();
+    assert_eq!(
+        smaller_results.len(),
+        1,
+        "Only the small message should match"
+    );
+    assert!(smaller_results[0].subject.contains("Small msg"));
 
     session.logout().unwrap();
 }
@@ -1385,7 +1368,7 @@ fn export_multiple_folders_uid_collision() {
     let entries: Vec<_> = std::fs::read_dir(&temp_dir)
         .unwrap()
         .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().map_or(false, |ext| ext == "eml"))
+        .filter(|e| e.path().extension().is_some_and(|ext| ext == "eml"))
         .collect();
     assert_eq!(
         entries.len(),
@@ -1522,6 +1505,106 @@ fn mark_as_read() {
         "Message should be marked as Seen, got: {flags:?}"
     );
 
+    session.logout().unwrap();
+}
+
+#[test]
+fn cli_sets_and_clears_flagged_state_with_filters() {
+    let user = unique_user();
+    send_email_from(
+        "billing@localhost",
+        &user,
+        "Invoice CLI flag test",
+        "target",
+    );
+    send_email_from(
+        "updates@localhost",
+        &user,
+        "Weekly CLI flag control",
+        "control",
+    );
+    sleep_for_delivery();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", user.as_str())];
+    write_multi_account_config(&config, &accounts);
+
+    let mut set_command = slashmail_cmd(&config, &accounts);
+    set_command.args([
+        "--account",
+        "personal",
+        "mark",
+        "--all-folders",
+        "--from",
+        "billing@localhost",
+        "--subject",
+        "invoice",
+        "--since",
+        "3m",
+        "--unseen",
+        "--set-flagged",
+        "--yes",
+    ]);
+    let stdout = assert_cmd_success(set_command.output().unwrap());
+    assert!(stdout.contains("Updated 1 message(s)."));
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+    let target_uids = session
+        .uid_search("SUBJECT \"Invoice CLI flag test\"")
+        .unwrap();
+    let control_uids = session
+        .uid_search("SUBJECT \"Weekly CLI flag control\"")
+        .unwrap();
+    assert_eq!(target_uids.len(), 1);
+    assert_eq!(control_uids.len(), 1);
+    let target_uid = *target_uids.iter().next().unwrap();
+    let control_uid = *control_uids.iter().next().unwrap();
+    let target_uid_set = target_uid.to_string();
+    let control_uid_set = control_uid.to_string();
+    let target_fetches = session.uid_fetch(&target_uid_set, "FLAGS").unwrap();
+    let target_flags = target_fetches.iter().next().unwrap().flags();
+    assert!(
+        target_flags
+            .iter()
+            .any(|flag| matches!(flag, imap::types::Flag::Flagged)),
+        "target should be flagged, got: {target_flags:?}"
+    );
+    let control_fetches = session.uid_fetch(&control_uid_set, "FLAGS").unwrap();
+    let control_flags = control_fetches.iter().next().unwrap().flags();
+    assert!(
+        !control_flags
+            .iter()
+            .any(|flag| matches!(flag, imap::types::Flag::Flagged)),
+        "control should remain unflagged, got: {control_flags:?}"
+    );
+    session.logout().unwrap();
+
+    let mut clear_command = slashmail_cmd(&config, &accounts);
+    clear_command.args([
+        "--account",
+        "personal",
+        "mark",
+        "--subject",
+        "Invoice CLI flag test",
+        "--flagged",
+        "--clear-flagged",
+        "--yes",
+    ]);
+    let stdout = assert_cmd_success(clear_command.output().unwrap());
+    assert!(stdout.contains("Updated 1 message(s)."));
+
+    let mut session = imap_connect(&user);
+    session.select("INBOX").unwrap();
+    let fetches = session.uid_fetch(&target_uid_set, "FLAGS").unwrap();
+    let flags = fetches.iter().next().unwrap().flags();
+    assert!(
+        !flags
+            .iter()
+            .any(|flag| matches!(flag, imap::types::Flag::Flagged)),
+        "target should be unflagged, got: {flags:?}"
+    );
     session.logout().unwrap();
 }
 
@@ -1837,9 +1920,9 @@ fn search_by_text() {
 }
 
 #[test]
-fn export_skip_existing() {
+fn export_skip_and_force_existing() {
     let user = unique_user();
-    send_email(&user, "Export skip test", "body");
+    send_email(&user, "Export existing test", "body");
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
@@ -1849,44 +1932,20 @@ fn export_skip_existing() {
 
     let tmp = tempfile::tempdir().unwrap();
 
-    // First export succeeds
     let (exported, skipped) =
         export::export_messages(&mut session, &messages, "INBOX", tmp.path(), false).unwrap();
-    assert_eq!(exported, 1);
-    assert_eq!(skipped, 0);
+    assert_eq!(exported, 1, "initial export");
+    assert_eq!(skipped, 0, "initial export");
 
-    // Second export without force skips the existing file
     let (exported, skipped) =
         export::export_messages(&mut session, &messages, "INBOX", tmp.path(), false).unwrap();
-    assert_eq!(exported, 0);
-    assert_eq!(skipped, 1);
+    assert_eq!(exported, 0, "non-forced re-export");
+    assert_eq!(skipped, 1, "non-forced re-export");
 
-    session.logout().unwrap();
-}
-
-#[test]
-fn export_force_overwrite() {
-    let user = unique_user();
-    send_email(&user, "Export force test", "body");
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
-    assert_eq!(messages.len(), 1);
-
-    let tmp = tempfile::tempdir().unwrap();
-
-    // First export
-    let (exported, _) =
-        export::export_messages(&mut session, &messages, "INBOX", tmp.path(), false).unwrap();
-    assert_eq!(exported, 1);
-
-    // Second export with force overwrites
     let (exported, skipped) =
         export::export_messages(&mut session, &messages, "INBOX", tmp.path(), true).unwrap();
-    assert_eq!(exported, 1);
-    assert_eq!(skipped, 0);
+    assert_eq!(exported, 1, "forced re-export");
+    assert_eq!(skipped, 0, "forced re-export");
 
     session.logout().unwrap();
 }
@@ -1948,26 +2007,6 @@ fn read_fetches_from_explicit_non_default_folder() {
     let text = String::from_utf8_lossy(raw);
     assert!(text.contains("archive body"));
     assert!(!text.contains("inbox body"));
-
-    session.logout().unwrap();
-}
-
-#[test]
-fn search_by_smaller() {
-    let user = unique_user();
-    let small_body = "tiny";
-    let large_body = "x".repeat(10_000);
-    send_email(&user, "Small msg", small_body);
-    send_email(&user, "Large msg", &large_body);
-    sleep_for_delivery();
-
-    let mut session = imap_connect(&user);
-    let mut criteria = default_criteria("INBOX");
-    criteria.smaller = Some("5K".to_string());
-    let results = search::search(&mut session, &criteria).unwrap();
-
-    assert_eq!(results.len(), 1, "Only the small message should match");
-    assert!(results[0].subject.contains("Small msg"));
 
     session.logout().unwrap();
 }
