@@ -524,7 +524,6 @@ a:focus-visible {
   50% { opacity: 0; }
 }
 
-.audience,
 .examples-section,
 .commands-section,
 .agent-section,
@@ -532,16 +531,6 @@ a:focus-visible {
   border-top: 1px solid var(--line);
 }
 
-.audience {
-  padding: 104px 0 112px;
-}
-
-.audience > div {
-  max-width: 730px;
-  margin-left: auto;
-}
-
-.audience h2,
 .section-intro h2,
 .commands-heading h2,
 .agent-copy h2 {
@@ -550,106 +539,6 @@ a:focus-visible {
   font-weight: 720;
   letter-spacing: -0.055em;
   line-height: 1;
-}
-
-.audience > div > p {
-  max-width: 630px;
-  margin: 0;
-  color: var(--muted);
-  font-size: 1.12rem;
-  line-height: 1.65;
-}
-
-.agentic-flow {
-  display: grid;
-  grid-template-columns: minmax(150px, 0.9fr) 28px minmax(150px, 0.95fr) 28px minmax(180px, 1.1fr);
-  align-items: stretch;
-  margin: 52px 0 0;
-}
-
-.flow-sources {
-  display: grid;
-  gap: 8px;
-}
-
-.flow-node {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 5px;
-  padding: 15px 16px;
-  background: var(--paper);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-}
-
-.flow-label {
-  color: var(--violet);
-  font: 500 0.6rem "IBM Plex Mono", monospace;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.flow-node strong {
-  font-size: 0.88rem;
-  line-height: 1.25;
-}
-
-.flow-node small {
-  color: var(--muted);
-  font: 0.62rem/1.45 "IBM Plex Mono", monospace;
-}
-
-.flow-arrow {
-  display: grid;
-  place-items: center;
-  color: var(--violet);
-  font: 500 1rem "IBM Plex Mono", monospace;
-}
-
-.flow-cli {
-  flex-direction: row;
-  align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-  color: #f7f7fa;
-  background: #1b1c22;
-  border-color: #1b1c22;
-}
-
-.flow-cli strong,
-.flow-cli small {
-  display: block;
-}
-
-.flow-cli small {
-  margin-top: 4px;
-  color: #a9aab7;
-}
-
-.flow-slash {
-  color: var(--mint);
-  font: 500 2.2rem/1 "IBM Plex Mono", monospace;
-}
-
-.flow-outcome {
-  background: var(--violet-soft);
-  border-color: #d3d3fb;
-}
-
-.flow-outcome small {
-  color: #5f6070;
-}
-
-.flow-outcome::before {
-  width: 7px;
-  height: 7px;
-  margin-bottom: 3px;
-  background: var(--mint);
-  border-radius: 50%;
-  content: "";
-  box-shadow: 0 0 0 4px rgb(114 239 208 / 18%);
 }
 
 .examples-section {
@@ -1206,6 +1095,7 @@ a:focus-visible {
     box-shadow: 8px 10px 0 var(--violet-soft);
   }
 
+
   .terminal-body {
     min-height: 455px;
     overflow-x: auto;
@@ -1227,7 +1117,6 @@ a:focus-visible {
     padding-inline: 6px;
   }
 
-  .audience,
   .examples-section,
   .commands-section,
   .agent-section,
@@ -1235,25 +1124,6 @@ a:focus-visible {
     padding: 78px 0 86px;
   }
 
-  .agentic-flow {
-    grid-template-columns: 1fr;
-    gap: 10px;
-    margin-top: 38px;
-  }
-
-  .flow-sources {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .flow-arrow {
-    min-height: 16px;
-    transform: rotate(90deg);
-  }
-
-  .flow-cli,
-  .flow-outcome {
-    min-height: 86px;
-  }
 
   .command-list article {
     grid-template-columns: 1fr;

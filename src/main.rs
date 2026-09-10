@@ -444,6 +444,23 @@ impl FilterArgs {
     }
 }
 
+fn load_config_dotenv(config_path: &Path) -> Result<()> {
+    let dotenv_path = config_path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(".env");
+    if !dotenv_path.try_exists().with_context(|| {
+        format!(
+            "Failed to inspect environment file: {}",
+            dotenv_path.display()
+        )
+    })? {
+        return Ok(());
+    }
+    dotenvy::from_path(&dotenv_path)
+        .with_context(|| format!("Failed to load environment file: {}", dotenv_path.display()))
+}
+
 fn get_password_for_account(account: &config::ResolvedAccount) -> Result<String> {
     if let Some(env_name) = &account.pass_env {
         if let Ok(p) = std::env::var(env_name) {
@@ -1758,6 +1775,9 @@ fn main() -> Result<()> {
 
     // Load config: explicit --config path > default location > empty
     let cfg = config::Config::load(cli.config.as_deref())?;
+    if let Some(config_path) = cli.config.clone().or_else(config::Config::default_path) {
+        load_config_dotenv(&config_path)?;
+    }
 
     reject_all_accounts_if_unsupported(&cli)?;
 
@@ -1868,6 +1888,48 @@ mod tests {
             trash_folder: "Trash".to_string(),
             default_folder: "INBOX".to_string(),
         }
+    }
+
+    #[test]
+    fn config_dotenv_loads_password_without_overriding_process_environment() {
+        const LOADED: &str = "SLASHMAIL_TEST_DOTENV_LOADED_8F31";
+        const EXISTING: &str = "SLASHMAIL_TEST_DOTENV_EXISTING_8F31";
+        struct RestoreEnvironment {
+            values: [(&'static str, Option<std::ffi::OsString>); 2],
+        }
+
+        impl Drop for RestoreEnvironment {
+            fn drop(&mut self) {
+                for (name, value) in &self.values {
+                    match value {
+                        Some(value) => std::env::set_var(name, value),
+                        None => std::env::remove_var(name),
+                    }
+                }
+            }
+        }
+
+        let _restore = RestoreEnvironment {
+            values: [
+                (LOADED, std::env::var_os(LOADED)),
+                (EXISTING, std::env::var_os(EXISTING)),
+            ],
+        };
+        let directory = tempfile::tempdir().unwrap();
+        let config_path = directory.path().join("config.toml");
+
+        std::env::remove_var(LOADED);
+        std::env::set_var(EXISTING, "process");
+        std::fs::write(
+            directory.path().join(".env"),
+            format!("{LOADED}=from-file\n{EXISTING}=from-file\n"),
+        )
+        .unwrap();
+
+        load_config_dotenv(&config_path).unwrap();
+
+        assert_eq!(std::env::var(LOADED).unwrap(), "from-file");
+        assert_eq!(std::env::var(EXISTING).unwrap(), "process");
     }
 
     struct MustNotRead;

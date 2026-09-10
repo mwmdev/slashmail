@@ -61,8 +61,7 @@
         </div>
 
         <div class="hero-links">
-          <a class="primary-link" href="https://github.com/mwmdev/slashmail#usage" target="_blank" rel="noreferrer">Read the docs <span aria-hidden="true">→</span></a>
-          <a class="version" href="https://github.com/mwmdev/slashmail/releases/tag/v0.6.0" target="_blank" rel="noreferrer">v0.6.0 · MIT / Apache-2.0</a>
+          <a class="primary-link" href="https://github.com/mwmdev/slashmail#slashmail" target="_blank" rel="noreferrer">Read the docs</a>
         </div>
       </div>
 
@@ -144,39 +143,6 @@
       </div>
     </section>
 
-    <section class="audience" aria-labelledby="audience-title">
-      <div>
-        <h2 id="audience-title">Email that fits your workflow, not the other way around.</h2>
-        <p>For developers, operators, and automation builders who want composable email tools, predictable output, and direct control over their own mailbox.</p>
-
-        <figure class="agentic-flow" aria-label="You and your agent use the Slashmail CLI to produce a reviewable result">
-          <div class="flow-sources">
-            <div class="flow-node">
-              <span class="flow-label">You</span>
-              <strong>Set the intent</strong>
-            </div>
-            <div class="flow-node">
-              <span class="flow-label">Your agent</span>
-              <strong>Interprets the task</strong>
-            </div>
-          </div>
-          <span class="flow-arrow" aria-hidden="true">→</span>
-          <div class="flow-node flow-cli">
-            <span class="flow-slash" aria-hidden="true">/</span>
-            <span>
-              <strong>slashmail</strong>
-              <small>Explicit CLI actions</small>
-            </span>
-          </div>
-          <span class="flow-arrow" aria-hidden="true">→</span>
-          <div class="flow-node flow-outcome">
-            <span class="flow-label">Outcome</span>
-            <strong>Ready to review</strong>
-            <small>Summary · search · draft</small>
-          </div>
-        </figure>
-      </div>
-    </section>
 
     <section class="examples-section" id="examples" aria-labelledby="examples-title">
       <div class="section-intro">
@@ -343,12 +309,12 @@
           <span class="action-number">03</span>
           <div>
             <code>printf 'Received—thank you.' | slashmail reply 1842</code>
-            <p>Save an unsent draft for review</p>
+            <p>Save a draft for review</p>
           </div>
         </div>
         <div class="agent-safety">
           <span aria-hidden="true">✓</span>
-          <p>Nothing sent. Draft saved for your review.</p>
+          <p>Draft saved for your review.</p>
         </div>
       </div>
     </section>
@@ -477,6 +443,7 @@
         }
       });
     });
+
 
     const terminalTabs = [...document.querySelectorAll('.terminal-example-tab')];
     const terminalSlides = [...document.querySelectorAll('.terminal-slide')];

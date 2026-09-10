@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Automatic loading of password variables from `.env` beside the selected `config.toml`, while preserving values already set in the process environment
+
 ## [0.6.0] - 2026-07-30
 
 ### Added
