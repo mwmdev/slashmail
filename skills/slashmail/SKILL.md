@@ -1,15 +1,15 @@
 ---
 name: slashmail
-description: "Interact with email via the slashmail IMAP CLI. Use when the user asks to draft, reply to, check, search, read, delete, move, mark, or count email, or check mailbox quota. Triggers on: email, mail, inbox, messages, draft email, reply to email, check my email, search email, delete email, unread messages, slashmail."
+description: "Interact with email via the slashmail IMAP CLI. Use when the user asks to draft, reply to, check, search, read, delete, move, mark, count, export, list or save attachments, inspect mailbox status, or check quota. Triggers on: email, mail, inbox, messages, draft email, reply to email, email attachments, save attachments, check my email, search email, delete email, unread messages, slashmail."
 ---
 
 # Slashmail
 
 Email interaction via the `slashmail` CLI, an IMAP client.
 
-**Prerequisites**: Verify `slashmail` is installed with `command -v slashmail`. If not found, install from https://github.com/mwmdev/slashmail (Rust binary — `cargo install slashmail` or download from releases). Before drafting, run `slashmail draft --help`; before replying, run `slashmail reply --help`. If the required command is unavailable, stop, report that the installed binary is stale, and suggest upgrading from a release or with Cargo. Do not substitute an arbitrary development build.
+**Prerequisites**: Verify `slashmail` is installed with `command -v slashmail`. If not found, install from https://github.com/mwmdev/slashmail (Rust binary — `cargo install slashmail` or download from releases). Before drafting, run `slashmail draft --help`; before replying, run `slashmail reply --help`; before listing or saving received attachments, run `slashmail attachments --help`. If the required command or documented flag is unavailable, stop, report that the installed binary is stale, and suggest upgrading from a release or with Cargo. Do not substitute an arbitrary development build.
 
-**Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts define `pass_env` and can be selected with `--account NAME`; read-only commands can use `--all-accounts`.
+**Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts define `pass_env` and can be selected with `--account NAME`. Only `search`, `read`, `count`, `status`, and `quota` support `--all-accounts`.
 
 Slashmail automatically loads `.env` beside the selected `config.toml` without overriding values already present in the process environment. Store each named account password under the variable named by `pass_env`. Keep `.env` private and out of version control.
 
@@ -51,23 +51,27 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 |---------|-------------|-------------|
 | `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`, `--attach PATH`; `--subject`, `--html`, `--drafts-folder` |
 | `reply UID` | Save an unsent reply-all draft; body is read from stdin | repeatable `--attach PATH`; `--folder`, `--html`, `--no-quote`, `--drafts-folder` |
+| `attachments UID` | List or save received attachments without marking the message seen | `--folder`, `--json`, `--save`, repeatable `--part PART`, `-o DIR`, `--force` |
 | `search` | Retrieve messages (sorted newest-first) | `--json` |
 | `read` | Display message content in terminal | — |
 | `count` | Fast count without fetching content | `--json` |
 | `delete` | Move to Trash | `--trash-folder NAME`, `--dry-run`, `--yes` |
 | `move` | Move to folder | `--to DEST`, `--dry-run`, `--yes` |
-| `mark` | Set/unset flags | `--read/--unread`, `--flagged/--unflagged`, `--dry-run`, `--yes` |
+| `mark` | Set/unset flags | `--read/--unread`, `--set-flagged/--clear-flagged`, `--dry-run`, `--yes` |
 | `export` | Save as `.eml` files | `-o DIR`, `--force`, `--yes` |
 | `status` | Per-folder message stats | — |
 | `quota` | Mailbox capacity usage | — |
+| `completions SHELL` | Generate shell completions | `bash`, `zsh`, `fish`, `powershell`, or `elvish` |
 
 ## Safety Rules
 
 - **Always `--dry-run` first** for delete, move, and bulk mark operations. Show the user what will be affected before executing.
-- **Never pass `--yes`** without showing the dry-run results to the user first and getting confirmation.
+- **Never pass `--yes` to delete, move, or mark** without showing the matching dry-run results to the user first and getting confirmation.
+- **Preview exports with equivalent `search` filters** before using noninteractive `export --yes`. Use `--force` only when the user explicitly authorizes replacing the displayed destination files.
 - **Use `--limit`** when the user asks for "recent" or "latest" messages to avoid fetching everything.
 - **Draft and reply save immediately but never send.** Do not describe a saved draft as sent.
 - **Attach only exact user-authorized paths.** Pass each literal local file path in its own `--attach` occurrence. Never expand globs, search directories, auto-discover files, or substitute a similarly named file.
+- **List received attachments before saving** unless the user already specified exact MIME part IDs. Confirm the output directory before `--save`, and use `--force` only after the user explicitly authorizes replacing existing destination files or symlinks.
 - **Inspect Drafts before retrying an ambiguous save.** If slashmail says the draft was saved but its UID is unresolved, or the APPEND outcome is unknown, retrying may create a duplicate.
 - **Treat receipts as sensitive.** The stable success line includes Account, Folder, UID, To, Cc, Bcc, and Subject; do not place recipient metadata in public logs.
 
@@ -122,17 +126,39 @@ Confirmed saves print exactly one control-free receipt line:
 Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc=bob@example.com | Bcc= | Subject=Re: Project update
 ```
 
+## Received Attachment Rules
+
+- Select one account, source `--folder` (default: the account's configured default folder), and positive source UID. The `attachments` command does not support `--all-accounts`.
+- Listing is the default and does not mark the message as seen. Add `--json` only for machine-readable metadata; it conflicts with `--save`.
+- Add `--save` to write all declared attachments, or repeat `--part PART` to save specific canonical MIME part IDs such as `2` or `2.1`. `--part`, `--output-dir`, and `--force` require `--save`.
+- Prefer an explicit `--output-dir`; otherwise files are written to the current directory. Slashmail creates the output directory when needed.
+- Slashmail sanitizes filenames, resolves same-message name collisions deterministically, and refuses existing destinations unless `--force` is supplied. With `--force`, it replaces regular files or symlinks but rejects other filesystem objects.
+- Only MIME parts declared as attachments are exposed. Inline/CID parts and attachments nested inside another attached message are not extracted.
+
+```bash
+# List received attachments
+slashmail attachments --account work --folder INBOX 1842
+
+# Inspect attachment metadata as JSON
+slashmail attachments --account work --folder INBOX --json 1842
+
+# Save selected parts after reviewing the listing
+slashmail attachments --account work --folder INBOX --save \
+  --part 2.1 --part 3 --output-dir './received files' 1842
+```
+
 ## Common Patterns
 
 **Check inbox**: `slashmail search --limit 10`
-**Unread count**: `slashmail count` (shows total in INBOX)
+**Unread count**: `slashmail count --unseen`
 **Find emails from someone**: `slashmail search --from "name@example.com" --limit 20`
 **Recent emails**: `slashmail search --since 1d --limit 20`
 **Mailbox overview**: `slashmail status`
 **Search email content**: `slashmail search --body "invoice" --since 1m`
-**Search everywhere**: `slashmail search --text "quarterly report"`
+**Search headers and body**: `slashmail search --text "quarterly report"`
 **Search all accounts**: `slashmail search --all-accounts --text "quarterly report"`
 **Read a message**: `slashmail read --from "boss@example.com" --limit 1`
 **Draft a new message**: `printf '%s\n' 'Draft body' | slashmail draft --to recipient@example.com --subject "Subject"`
 **Draft a reply**: `printf '%s\n' 'Reply body' | slashmail reply --folder INBOX 1842`
+**List received attachments**: `slashmail attachments --folder INBOX 1842`
 **Clean up old newsletters**: `slashmail delete --from "newsletter@" --before 3m --dry-run` then confirm with user before running without `--dry-run`
