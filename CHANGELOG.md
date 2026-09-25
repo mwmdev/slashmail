@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `read --uid <UID>` reads one exact message from the selected folder and fails when that UID does not exist
+- `read --json` prints full headers, thread identifiers, flags, decoded text body, and attachment part metadata
+- `search --json` rows include `message_id`, `in_reply_to`, `references`, and `seen`/`answered`/`flagged` state
+- `draft --json` and `reply --json` print the saved-draft receipt, including the draft UID and Message-ID, as JSON
+
 ## [0.7.0] - 2026-09-10
 
 ### Added

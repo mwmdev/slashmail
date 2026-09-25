@@ -146,6 +146,10 @@ struct DraftArgs {
     /// Destination Drafts mailbox
     #[arg(long)]
     drafts_folder: Option<String>,
+
+    /// Print the saved-draft receipt as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -173,6 +177,10 @@ struct ReplyArgs {
     /// Destination Drafts mailbox
     #[arg(long)]
     drafts_folder: Option<String>,
+
+    /// Print the saved-draft receipt as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -303,6 +311,14 @@ struct ReadArgs {
     /// Limit number of messages to display [default: 1]
     #[arg(short = 'n', long)]
     limit: Option<usize>,
+
+    /// Read the message with this UID in the selected folder
+    #[arg(long, value_parser = clap::value_parser!(u32).range(1..), conflicts_with = "all_folders")]
+    uid: Option<u32>,
+
+    /// Output as JSON
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Parser)]
@@ -423,6 +439,7 @@ impl FilterArgs {
                 .clone()
                 .unwrap_or_else(|| default_folder.to_string()),
             all_folders: self.all_folders,
+            uid: None,
             subject: self.subject.clone(),
             from: self.from.clone(),
             to: self.to.clone(),
@@ -760,6 +777,7 @@ fn draft_receipt(
         account: account.label().to_string(),
         folder: folder.to_string(),
         uid,
+        message_id: composed.message_id.clone(),
         to: composed.to.iter().map(ToString::to_string).collect(),
         cc: composed.cc.iter().map(ToString::to_string).collect(),
         bcc: composed.bcc.iter().map(ToString::to_string).collect(),
@@ -772,13 +790,20 @@ fn report_save_outcome(
     account: &config::ResolvedAccount,
     folder: &str,
     composed: &draft::ComposedDraft,
+    json: bool,
 ) -> Result<()> {
     match outcome {
         draft::SaveOutcome::Saved { uid } => {
-            println!(
-                "{}",
-                draft::render_receipt(&draft_receipt(account, folder, uid, composed))
-            );
+            let receipt = draft_receipt(account, folder, uid, composed);
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string(&receipt)
+                        .context("Failed to serialize draft receipt as JSON")?
+                );
+            } else {
+                println!("{}", draft::render_receipt(&receipt));
+            }
             Ok(())
         }
         draft::SaveOutcome::SavedUidUnresolved => {
@@ -847,7 +872,7 @@ fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> 
     )?;
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
-    report_save_outcome(outcome?, account, &folder, &composed)
+    report_save_outcome(outcome?, account, &folder, &composed, args.json)
 }
 
 fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> {
@@ -882,7 +907,7 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
     )?;
     let outcome = save_draft(&factory, &mut session, &folder, &composed);
     let _ = session.logout();
-    report_save_outcome(outcome?, account, &folder, &composed)
+    report_save_outcome(outcome?, account, &folder, &composed, args.json)
 }
 
 fn cmd_attachments(
@@ -999,23 +1024,23 @@ fn search_accounts(
 }
 
 fn command_supports_all_accounts(command: &Commands) -> bool {
-    matches!(
-        command,
-        Commands::Search(_)
-            | Commands::Read(_)
-            | Commands::Count(_)
-            | Commands::Quota
-            | Commands::Status
-    )
+    match command {
+        Commands::Read(args) => args.uid.is_none(),
+        Commands::Search(_) | Commands::Count(_) | Commands::Quota | Commands::Status => true,
+        _ => false,
+    }
 }
 
 fn reject_all_accounts_if_unsupported(cli: &Cli) -> Result<()> {
-    if cli.all_accounts && !command_supports_all_accounts(&cli.command) {
-        bail!(
-            "--all-accounts is only supported for search, read, count, status, and quota; use --account <NAME> for this command"
-        );
+    if !cli.all_accounts || command_supports_all_accounts(&cli.command) {
+        return Ok(());
     }
-    Ok(())
+    if matches!(&cli.command, Commands::Read(_)) {
+        bail!("read --uid selects one message in one account; use --account <NAME> instead of --all-accounts");
+    }
+    bail!(
+        "--all-accounts is only supported for search, read, count, status, and quota; use --account <NAME> for this command"
+    );
 }
 
 #[derive(Debug, Clone)]
@@ -1717,12 +1742,21 @@ fn cmd_read_accounts(accounts: &[config::ResolvedAccount], args: &ReadArgs) -> R
 
     for account in accounts {
         let (mut account_messages, fetched, folder) = with_account_session(account, |session| {
-            let criteria = args.filter.to_criteria(limit, &account.default_folder);
+            let mut criteria = args.filter.to_criteria(limit, &account.default_folder);
+            criteria.uid = args.uid;
 
             let sp = spinner(&format!("Searching {}...", account.label()));
             let result = search::search(session, &criteria);
             sp.finish_and_clear();
             let mut account_messages = result?;
+            if let Some(uid) = args.uid {
+                if account_messages.is_empty() {
+                    bail!(
+                        "No message with UID {uid} matches in '{}'",
+                        display::sanitize_terminal_field(&criteria.folder)
+                    );
+                }
+            }
 
             tag_messages(&mut account_messages, account);
 
@@ -1741,6 +1775,13 @@ fn cmd_read_accounts(accounts: &[config::ResolvedAccount], args: &ReadArgs) -> R
     }
 
     sort_and_limit_messages(&mut messages, limit);
+    if args.json {
+        println!(
+            "{}",
+            read::render_messages_json(&messages, &defaults, &bodies)?
+        );
+        return Ok(());
+    }
     if messages.is_empty() {
         println!("No messages found.");
         return Ok(());
@@ -2363,7 +2404,8 @@ mod tests {
             draft::SaveOutcome::SavedUidUnresolved,
             draft::SaveOutcome::Unknown,
         ] {
-            let error = report_save_outcome(outcome, &account, "Drafts", &composed).unwrap_err();
+            let error =
+                report_save_outcome(outcome, &account, "Drafts", &composed, false).unwrap_err();
             let rendered = error.to_string();
             assert!(!rendered.contains("private body"));
             assert!(!rendered.contains("Content-Type"));
@@ -2566,5 +2608,27 @@ mod tests {
         let cli =
             Cli::try_parse_from(["slashmail", "--all-accounts", "attachments", "42"]).unwrap();
         assert!(reject_all_accounts_if_unsupported(&cli).is_err());
+    }
+
+    #[test]
+    fn read_uid_selects_one_folder_in_one_account() {
+        let cli =
+            Cli::try_parse_from(["slashmail", "read", "--uid", "42", "-f", "Archive"]).unwrap();
+        let Commands::Read(args) = &cli.command else {
+            panic!("expected read command")
+        };
+        assert_eq!(args.uid, Some(42));
+        assert!(reject_all_accounts_if_unsupported(&cli).is_ok());
+
+        assert!(Cli::try_parse_from(["slashmail", "read", "--uid", "0"]).is_err());
+        assert!(
+            Cli::try_parse_from(["slashmail", "read", "--uid", "42", "--all-folders"]).is_err()
+        );
+
+        let all =
+            Cli::try_parse_from(["slashmail", "--all-accounts", "read", "--uid", "42"]).unwrap();
+        assert!(reject_all_accounts_if_unsupported(&all).is_err());
+        let all = Cli::try_parse_from(["slashmail", "--all-accounts", "read"]).unwrap();
+        assert!(reject_all_accounts_if_unsupported(&all).is_ok());
     }
 }

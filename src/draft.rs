@@ -73,11 +73,12 @@ pub enum SaveOutcome {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DraftReceipt {
     pub account: String,
     pub folder: String,
     pub uid: u32,
+    pub message_id: String,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -1656,6 +1657,7 @@ Content-Transfer-Encoding: base64\r\n\r\n\
             account: "\u{1b}[31mwork\u{1b}[0m".to_string(),
             folder: "Drafts\u{1b}]0;malicious title\u{7}\nInjected".to_string(),
             uid: 42,
+            message_id: "<draft@example.com>".to_string(),
             to: vec!["A <a@example.com>\tB".to_string()],
             cc: Vec::new(),
             bcc: vec!["secret@example.com\u{9b}2J".to_string()],

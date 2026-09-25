@@ -147,7 +147,7 @@ SLASHMAIL_WORK_PASS=your-work-password
 
 When `[[accounts]]` is configured, slashmail uses `default_account` by default, or the first account if `default_account` is omitted. Use `--account <NAME>` to select one account, or `--all-accounts` to aggregate read-only commands across every account.
 
-`--all-accounts` is supported for `search`, `read`, `count`, `status`, and `quota`. Mutating commands (`delete`, `move`, `mark`), `export`, drafts, replies, and received-attachment inspection require a single account.
+`--all-accounts` is supported for `search`, `read` (without `--uid`), `count`, `status`, and `quota`. Mutating commands (`delete`, `move`, `mark`), `export`, drafts, replies, and received-attachment inspection require a single account.
 
 Use `--config <PATH>` to specify an alternative config file location.
 
@@ -191,9 +191,11 @@ built, so large attachments may be limited by available memory or the mailbox
 provider.
 
 On success, slashmail prints the account, Drafts folder, UID, recipients, and
-subject. This receipt may contain Bcc addresses, so avoid copying it into
-public logs. If the APPEND outcome is reported as unknown, inspect the Drafts
-folder before retrying to avoid creating a duplicate.
+subject. Add `--json` to print the same receipt, plus the draft's
+`message_id`, as one JSON object. This receipt may contain Bcc addresses, so
+avoid copying it into public logs. If the APPEND outcome is reported as
+unknown, inspect the Drafts folder before retrying to avoid creating a
+duplicate.
 
 ### Received attachments
 
@@ -219,6 +221,42 @@ Saving aborts before writing anything if a destination already exists. Add
 the output directory. Only parts declared as attachments are exposed;
 inline/CID parts and attachments nested inside another attached message are
 not extracted.
+
+### Reading one message by UID
+
+`read --uid <UID>` displays exactly that message from the selected folder
+instead of the newest filter match. The folder is `--folder`, or else the
+account's configured `default_folder` (INBOX if unset); UIDs are only unique
+within one folder, so pass `--folder` explicitly when reusing a UID from
+`search`. It fails when no message with that UID exists and cannot be combined
+with `--all-folders` or `--all-accounts`. Like every read, it does not mark the
+message as seen.
+
+```bash
+slashmail read --account work --folder INBOX --uid 1842
+slashmail read --account work --folder INBOX --uid 1842 --json
+```
+
+`read --json` prints an array with one object per message: `uid`, `folder`,
+`message_id`, `in_reply_to`, `references`, full `from`/`to`/`cc`/`date`/
+`subject` headers, `timestamp`, `seen`/`answered`/`flagged`, the decoded text
+`body`, and `attachments` (MIME `part`, `filename`, `content_type`, `size`).
+Pass an attachment's `part` to `attachments --save --part`.
+
+### JSON search fields
+
+Each `search --json` row contains `uid`, `folder` (set with `--all-folders`),
+`from`, `subject`, `date`, `timestamp`, `size`, the thread identifiers
+`message_id` (or `null`), `in_reply_to`, and `references` (arrays of
+angle-bracketed IDs), and the `seen`, `answered`, and `flagged` booleans.
+Rows include `account` when a named account is used. `from` and `subject` are
+shortened for display; use `read --json` for the full headers.
+
+```bash
+# Messages you have not answered yet
+slashmail search --since 7d --json |
+  jq '.[] | select(.answered | not) | {uid, subject, message_id}'
+```
 
 ### Filter options
 
@@ -293,7 +331,7 @@ slashmail search -u user@example.com --body "invoice attached"
 # Search everywhere (headers + body)
 slashmail search -u user@example.com --text "quarterly report"
 
-# JSON output for scripting (search and count only)
+# JSON output for scripting
 slashmail search -u user@example.com --from "alerts" --json | jq '.[].subject'
 slashmail count -u user@example.com --json
 

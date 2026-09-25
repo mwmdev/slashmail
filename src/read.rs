@@ -1,5 +1,7 @@
 use crate::attachment;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use mailparse::MailHeaderMap;
+use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::connection::ImapSession;
@@ -106,6 +108,74 @@ pub fn print_messages_with_bodies(
             println!("\n{}\n", "─".repeat(60));
         }
     }
+}
+
+#[derive(Serialize)]
+struct ReadMessageJson<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<&'a str>,
+    folder: String,
+    uid: u32,
+    message_id: Option<&'a str>,
+    in_reply_to: &'a [String],
+    references: &'a [String],
+    from: String,
+    to: String,
+    cc: String,
+    date: String,
+    timestamp: i64,
+    subject: String,
+    seen: bool,
+    answered: bool,
+    flagged: bool,
+    body: String,
+    attachments: Vec<attachment::AttachmentSummary>,
+}
+
+/// Render fetched messages as a JSON array, in the order given.
+///
+/// Unlike terminal output, a missing, unparseable, or undecodable body is an
+/// error so scripted callers never mistake raw or partial content for a
+/// decoded result.
+pub fn render_messages_json(
+    messages: &[MessageRow],
+    default_folders: &DefaultFolderMap,
+    bodies: &MessageBodyMap,
+) -> Result<String> {
+    let mut rendered = Vec::with_capacity(messages.len());
+    for msg in messages {
+        let key = message_key(msg, default_folders);
+        let raw = bodies
+            .get(&key)
+            .ok_or_else(|| anyhow!("Could not fetch body for UID {}", msg.uid))?;
+        let parsed = mailparse::parse_mail(raw)
+            .with_context(|| format!("Failed to parse message UID {}", msg.uid))?;
+        let header = |name: &str| parsed.headers.get_first_value(name).unwrap_or_default();
+        rendered.push(ReadMessageJson {
+            account: msg.account.as_deref(),
+            folder: key.1,
+            uid: msg.uid,
+            message_id: msg.message_id.as_deref(),
+            in_reply_to: &msg.in_reply_to,
+            references: &msg.references,
+            from: header("From"),
+            to: header("To"),
+            cc: header("Cc"),
+            date: header("Date"),
+            timestamp: msg.timestamp,
+            subject: header("Subject"),
+            seen: msg.seen,
+            answered: msg.answered,
+            flagged: msg.flagged,
+            body: decoded_text_body(&parsed)
+                .with_context(|| format!("Failed to decode body of message UID {}", msg.uid))?
+                .unwrap_or_default()
+                .trim_end()
+                .to_string(),
+            attachments: attachment::attachment_summaries(&parsed),
+        });
+    }
+    serde_json::to_string(&rendered).context("Failed to serialize messages as JSON")
 }
 
 pub fn message_key(
@@ -319,20 +389,30 @@ mod tests {
         assert!(attachments.is_empty());
     }
 
-    #[test]
-    fn message_key_uses_account_fallback_folder() {
-        let mut defaults = DefaultFolderMap::new();
-        defaults.insert(Some("work".to_string()), "Sent".to_string());
-        let msg = MessageRow {
+    fn row(folder: Option<&str>) -> MessageRow {
+        MessageRow {
             account: Some("work".to_string()),
             uid: 42,
-            folder: None,
+            folder: folder.map(str::to_string),
             from: String::new(),
             subject: String::new(),
             date: String::new(),
             timestamp: 0,
             size: 0,
-        };
+            message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            seen: false,
+            answered: false,
+            flagged: false,
+        }
+    }
+
+    #[test]
+    fn message_key_uses_account_fallback_folder() {
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "Sent".to_string());
+        let msg = row(None);
 
         assert_eq!(
             message_key(&msg, &defaults),
@@ -344,21 +424,86 @@ mod tests {
     fn message_key_prefers_explicit_folder() {
         let mut defaults = DefaultFolderMap::new();
         defaults.insert(Some("work".to_string()), "Sent".to_string());
-        let msg = MessageRow {
-            account: Some("work".to_string()),
-            uid: 42,
-            folder: Some("Archive".to_string()),
-            from: String::new(),
-            subject: String::new(),
-            date: String::new(),
-            timestamp: 0,
-            size: 0,
-        };
+        let msg = row(Some("Archive"));
 
         assert_eq!(
             message_key(&msg, &defaults),
             (Some("work".to_string()), "Archive".to_string(), 42)
         );
+    }
+
+    #[test]
+    fn json_reports_full_headers_resolved_folder_body_and_attachments() {
+        let long_subject = "S".repeat(120);
+        let raw = format!(
+            "From: A Very Long Sender Name <a.very.long.sender.address@example.com>\r\n\
+To: me@example.com\r\n\
+Subject: {long_subject}\r\n\
+Date: Mon, 1 Jun 2026 10:00:00 +0200\r\n\
+Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nSee screenshot\r\n\
+--b\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=shot.png\r\n\
+Content-Transfer-Encoding: base64\r\n\r\niVBORw0K\r\n--b--\r\n"
+        );
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "INBOX".to_string());
+        let mut bodies = MessageBodyMap::new();
+        bodies.insert(
+            (Some("work".to_string()), "INBOX".to_string(), 42),
+            raw.into_bytes(),
+        );
+        let msg = MessageRow {
+            message_id: Some("<m@example.com>".to_string()),
+            references: vec!["<root@example.com>".to_string()],
+            answered: true,
+            ..row(None)
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&render_messages_json(&[msg], &defaults, &bodies).unwrap())
+                .unwrap();
+        let message = &json[0];
+        assert_eq!(message["folder"], "INBOX");
+        assert_eq!(message["account"], "work");
+        assert_eq!(message["subject"], long_subject);
+        assert_eq!(
+            message["from"],
+            "A Very Long Sender Name <a.very.long.sender.address@example.com>"
+        );
+        assert_eq!(message["message_id"], "<m@example.com>");
+        assert_eq!(message["references"][0], "<root@example.com>");
+        assert_eq!(message["answered"], true);
+        assert_eq!(message["body"].as_str().unwrap().trim(), "See screenshot");
+        assert_eq!(
+            message["attachments"],
+            serde_json::json!([{
+                "part": "2",
+                "filename": "shot.png",
+                "content_type": "image/png",
+                "size": 6
+            }])
+        );
+    }
+
+    #[test]
+    fn json_fails_instead_of_omitting_unfetched_message() {
+        let defaults = DefaultFolderMap::new();
+        let error = render_messages_json(&[row(Some("INBOX"))], &defaults, &MessageBodyMap::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("UID 42"));
+    }
+
+    #[test]
+    fn json_fails_instead_of_returning_undecodable_body_as_text() {
+        let mut bodies = MessageBodyMap::new();
+        bodies.insert(
+            (Some("work".to_string()), "INBOX".to_string(), 42),
+            b"Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n%%%invalid%%%"
+                .to_vec(),
+        );
+        let error = render_messages_json(&[row(Some("INBOX"))], &DefaultFolderMap::new(), &bodies)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Failed to decode body of message UID 42"));
     }
 
     #[test]

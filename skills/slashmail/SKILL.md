@@ -49,11 +49,11 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 
 | Command | Description | Extra flags |
 |---------|-------------|-------------|
-| `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`, `--attach PATH`; `--subject`, `--html`, `--drafts-folder` |
-| `reply UID` | Save an unsent reply-all draft; body is read from stdin | repeatable `--attach PATH`; `--folder`, `--html`, `--no-quote`, `--drafts-folder` |
+| `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`, `--attach PATH`; `--subject`, `--html`, `--drafts-folder`, `--json` |
+| `reply UID` | Save an unsent reply-all draft; body is read from stdin | repeatable `--attach PATH`; `--folder`, `--html`, `--no-quote`, `--drafts-folder`, `--json` |
 | `attachments UID` | List or save received attachments without marking the message seen | `--folder`, `--json`, `--save`, repeatable `--part PART`, `-o DIR`, `--force` |
-| `search` | Retrieve messages (sorted newest-first) | `--json` |
-| `read` | Display message content in terminal | — |
+| `search` | Retrieve messages (sorted newest-first); JSON rows include `message_id`, `in_reply_to`, `references`, `seen`, `answered`, `flagged` | `--json` |
+| `read` | Display message content without marking it seen | `--uid UID` (exact message in `--folder`; single account), `--json` |
 | `count` | Fast count without fetching content | `--json` |
 | `delete` | Move to Trash | `--trash-folder NAME`, `--dry-run`, `--yes` |
 | `move` | Move to folder | `--to DEST`, `--dry-run`, `--yes` |
@@ -125,6 +125,14 @@ Confirmed saves print exactly one control-free receipt line:
 ```text
 Draft saved: Account=work | Folder=Drafts | UID=1843 | To=alice@example.com | Cc=bob@example.com | Bcc= | Subject=Re: Project update
 ```
+
+With `--json`, the receipt is one object with `account`, `folder`, `uid`, `message_id`, `to`, `cc`, `bcc`, and `subject`. Prefer it when recording the draft UID.
+
+## Reading by UID
+
+- Once `search` has identified a message, use `read --folder FOLDER --uid UID` rather than re-filtering by sender, subject, or date. It fails if the UID no longer exists in that folder, and it rejects `--all-folders` and `--all-accounts`.
+- `read --json` returns an array of objects with full `from`/`to`/`cc`/`date`/`subject`, `message_id`, `in_reply_to`, `references`, flags, decoded `body`, and `attachments` (`part`, `filename`, `content_type`, `size`). Pass a `part` to `attachments --save --part`.
+- In `search --json`, `from` and `subject` are shortened for display; match duplicates and follow-ups by `message_id`, `in_reply_to`, and `references` (angle-bracketed IDs), and use `answered` to skip mail already replied to.
 
 ## Received Attachment Rules
 

@@ -11,6 +11,12 @@ pub struct MessageRow {
     pub date: String,
     pub timestamp: i64,
     pub size: u32,
+    pub message_id: Option<String>,
+    pub in_reply_to: Vec<String>,
+    pub references: Vec<String>,
+    pub seen: bool,
+    pub answered: bool,
+    pub flagged: bool,
 }
 
 pub fn format_size(bytes: u64) -> String {
@@ -136,18 +142,28 @@ mod tests {
         assert_eq!(json, "[]");
     }
 
-    #[test]
-    fn json_single_message() {
-        let messages = vec![MessageRow {
+    fn row(uid: u32) -> MessageRow {
+        MessageRow {
             account: None,
-            uid: 42,
+            uid,
             folder: None,
             from: "alice@example.com".into(),
             subject: "Test".into(),
             date: "Mon, 1 Apr 2026".into(),
             timestamp: 1774000000,
             size: 1024,
-        }];
+            message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            seen: false,
+            answered: false,
+            flagged: false,
+        }
+    }
+
+    #[test]
+    fn json_single_message() {
+        let messages = vec![row(42)];
         let json = serde_json::to_string(&messages).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(parsed[0]["uid"], 42);
@@ -155,20 +171,20 @@ mod tests {
         assert_eq!(parsed[0]["subject"], "Test");
         assert_eq!(parsed[0]["size"], 1024);
         assert!(parsed[0]["folder"].is_null());
-        assert!(parsed[0]["account"].is_null());
+        assert!(parsed[0].get("account").is_none());
+        assert!(parsed[0]["message_id"].is_null());
+        assert_eq!(parsed[0]["in_reply_to"], serde_json::json!([]));
+        assert_eq!(parsed[0]["references"], serde_json::json!([]));
+        assert_eq!(parsed[0]["seen"], false);
+        assert_eq!(parsed[0]["answered"], false);
+        assert_eq!(parsed[0]["flagged"], false);
     }
 
     #[test]
     fn json_with_folder() {
         let messages = vec![MessageRow {
-            account: None,
-            uid: 1,
             folder: Some("INBOX".into()),
-            from: "bob@example.com".into(),
-            subject: "Hi".into(),
-            date: "Tue, 2 Apr 2026".into(),
-            timestamp: 1774100000,
-            size: 512,
+            ..row(1)
         }];
         let json = serde_json::to_string(&messages).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
@@ -179,13 +195,7 @@ mod tests {
     fn json_with_account() {
         let messages = vec![MessageRow {
             account: Some("work".into()),
-            uid: 1,
-            folder: None,
-            from: "bob@example.com".into(),
-            subject: "Hi".into(),
-            date: "Tue, 2 Apr 2026".into(),
-            timestamp: 1774100000,
-            size: 512,
+            ..row(1)
         }];
         let json = serde_json::to_string(&messages).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();

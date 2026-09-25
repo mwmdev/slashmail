@@ -215,6 +215,32 @@ pub fn render_attachments_json(attachments: &[ReceivedAttachment]) -> Result<Str
     serde_json::to_string(&rows).context("Failed to serialize attachments as JSON")
 }
 
+/// Attachment metadata for `read --json`. Unlike `attachments_from_message`,
+/// an undecodable part does not fail the listing; its `size` is `None`.
+#[derive(Debug, Serialize)]
+pub struct AttachmentSummary {
+    pub part: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: Option<u64>,
+}
+
+pub fn attachment_summaries(parsed: &mailparse::ParsedMail<'_>) -> Vec<AttachmentSummary> {
+    let mut summaries = Vec::new();
+    walk_attachment_parts(parsed, |part, parsed_part| {
+        summaries.push(AttachmentSummary {
+            part: part.to_string(),
+            filename: attachment_filename(parsed_part),
+            content_type: parsed_part.ctype.mimetype.to_lowercase(),
+            size: parsed_part
+                .get_body_raw()
+                .ok()
+                .map(|bytes| bytes.len() as u64),
+        });
+    });
+    summaries
+}
+
 pub fn render_saved_receipt(saved: &SavedAttachment) -> String {
     format!(
         "Saved attachment: Part={} | File={} | Size={}",

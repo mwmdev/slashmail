@@ -3,10 +3,12 @@ use regex::Regex;
 
 use crate::connection::ImapSession;
 use crate::display::MessageRow;
+use imap::types::Flag;
 
 pub struct SearchCriteria {
     pub folder: String,
     pub all_folders: bool,
+    pub uid: Option<u32>,
     pub subject: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -158,6 +160,9 @@ fn parse_date(s: &str) -> Result<String> {
 pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     let mut parts = Vec::new();
 
+    if let Some(uid) = criteria.uid {
+        parts.push(format!("UID {uid}"));
+    }
     if let Some(ref subj) = criteria.subject {
         parts.push(format!("SUBJECT {}", imap_quote(subj)));
     }
@@ -402,7 +407,7 @@ fn fetch_messages(
         let fetches = session
             .uid_fetch(
                 chunk,
-                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Subject From Date)])",
+                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Subject From Date Message-ID In-Reply-To References)])",
             )
             .context("IMAP FETCH failed")?;
 
@@ -424,6 +429,7 @@ fn fetch_messages(
             let header_str = String::from_utf8_lossy(header_bytes);
 
             let (mut subject, mut from, mut date) = (String::new(), String::new(), String::new());
+            let (mut message_id, mut in_reply_to, mut references) = (None, Vec::new(), Vec::new());
 
             let parsed = mailparse::parse_headers(header_bytes);
             if let Ok((headers, _)) = parsed {
@@ -432,6 +438,9 @@ fn fetch_messages(
                         "subject" => subject = h.get_value(),
                         "from" => from = h.get_value(),
                         "date" => date = h.get_value(),
+                        "message-id" => message_id = message_ids(&h.get_value()).into_iter().next(),
+                        "in-reply-to" => in_reply_to = message_ids(&h.get_value()),
+                        "references" => references = message_ids(&h.get_value()),
                         _ => {}
                     }
                 }
@@ -443,9 +452,18 @@ fn fetch_messages(
                         from = v.to_string();
                     } else if let Some(v) = line.strip_prefix("Date: ") {
                         date = v.to_string();
+                    } else if let Some(v) = line.strip_prefix("Message-ID: ") {
+                        message_id = message_ids(v).into_iter().next();
+                    } else if let Some(v) = line.strip_prefix("In-Reply-To: ") {
+                        in_reply_to = message_ids(v);
+                    } else if let Some(v) = line.strip_prefix("References: ") {
+                        references = message_ids(v);
                     }
                 }
             }
+
+            let flags = fetch.flags();
+            let has_flag = |wanted, name| has_system_flag(flags, wanted, name);
 
             from = truncate_str(&from, 40);
             subject = truncate_str(&subject, 60);
@@ -470,6 +488,12 @@ fn fetch_messages(
                     date,
                     timestamp,
                     size,
+                    message_id,
+                    in_reply_to,
+                    references,
+                    seen: has_flag(Flag::Seen, "\\Seen"),
+                    answered: has_flag(Flag::Answered, "\\Answered"),
+                    flagged: has_flag(Flag::Flagged, "\\Flagged"),
                 },
             );
         }
@@ -489,6 +513,72 @@ fn fetch_messages(
         }
         Ok(messages)
     }
+}
+
+/// IMAP flag names are case-insensitive, but the imap crate only maps the
+/// canonical spellings to system variants; others arrive as `Flag::Custom`.
+fn has_system_flag(flags: &[Flag<'_>], wanted: Flag<'_>, name: &str) -> bool {
+    flags.iter().any(|flag| {
+        *flag == wanted || matches!(flag, Flag::Custom(custom) if custom.eq_ignore_ascii_case(name))
+    })
+}
+
+/// Extract every angle-bracketed message ID from a Message-ID, In-Reply-To,
+/// or References header value, keeping the brackets. Brackets inside
+/// comments `(...)` or quoted strings outside an ID are ignored, as are
+/// commas, legacy phrases, and malformed tokens.
+pub fn message_ids(value: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut comment_depth = 0usize;
+    let mut in_quote = false;
+    let mut escaped = false;
+    // Byte offset just after the current '<', and whether the ID so far is valid.
+    let mut open: Option<(usize, bool)> = None;
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && (in_quote || comment_depth > 0) {
+            escaped = true;
+            continue;
+        }
+        if comment_depth > 0 {
+            match character {
+                '(' => comment_depth += 1,
+                ')' => comment_depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        if character == '"' {
+            in_quote = !in_quote;
+            continue;
+        }
+        if in_quote {
+            if character.is_control() {
+                if let Some((_, valid)) = open.as_mut() {
+                    *valid = false;
+                }
+            }
+            continue;
+        }
+        match (character, open.as_mut()) {
+            ('<', _) => open = Some((index + 1, true)),
+            ('>', Some((start, valid))) => {
+                let inner = &value[*start..index];
+                if *valid && !inner.is_empty() {
+                    ids.push(format!("<{inner}>"));
+                }
+                open = None;
+            }
+            ('(', None) => comment_depth = 1,
+            (c, Some((_, valid))) if c.is_whitespace() || c.is_control() => *valid = false,
+            _ => {}
+        }
+    }
+    ids
 }
 
 pub fn folders_to_skip(name: &str) -> bool {
@@ -918,11 +1008,54 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_query_uid_narrows_other_filters() {
+        let mut c = default_test_criteria();
+        c.uid = Some(42);
+        assert_eq!(build_query(&c).unwrap(), "UID 42");
+        c.subject = Some("report".into());
+        assert_eq!(build_query(&c).unwrap(), "UID 42 SUBJECT \"report\"");
+    }
+
+    #[test]
+    fn system_flags_match_case_insensitively() {
+        let flags = [Flag::Custom("\\SEEN".into()), Flag::Answered];
+        assert!(has_system_flag(&flags, Flag::Seen, "\\Seen"));
+        assert!(has_system_flag(&flags, Flag::Answered, "\\Answered"));
+        assert!(!has_system_flag(&flags, Flag::Flagged, "\\Flagged"));
+    }
+
+    #[test]
+    fn message_ids_extracts_bracketed_ids_and_skips_noise() {
+        assert_eq!(
+            message_ids("<root@example.com> <mid@example.com>"),
+            ["<root@example.com>", "<mid@example.com>"]
+        );
+        assert_eq!(
+            message_ids("<a@x>,<b@y>  (Alice's message of Monday)"),
+            ["<a@x>", "<b@y>"]
+        );
+        assert_eq!(
+            message_ids("junk <broken <real@example.com> <> <sp ace@x> <tail"),
+            ["<real@example.com>"]
+        );
+        assert!(message_ids("not-a-message-id").is_empty());
+        assert_eq!(
+            message_ids(r#"<id@x> (from "Bob" <bob@example.com>) "Re: <fake@x>" <next@x>"#),
+            ["<id@x>", "<next@x>"]
+        );
+        assert_eq!(
+            message_ids(r#"<"john doe"@example.com> (nested (<no@x>) \) ok) <after@x>"#),
+            [r#"<"john doe"@example.com>"#, "<after@x>"]
+        );
+    }
+
     /// Helper to build a default SearchCriteria with all fields set to None/false.
     fn default_test_criteria() -> SearchCriteria {
         SearchCriteria {
             folder: "INBOX".into(),
             all_folders: false,
+            uid: None,
             subject: None,
             from: None,
             to: None,
