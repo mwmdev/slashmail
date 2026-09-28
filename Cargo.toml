@@ -1,8 +1,8 @@
 [package]
 name = "slashmail"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2021"
-rust-version = "1.83"
+rust-version = "1.88"
 description = "CLI for searching, managing, drafting, and bulk-operating on emails via IMAP"
 license = "MIT OR Apache-2.0"
 authors = ["Michael Wassmer <mikewassmer@protonmail.com>"]
@@ -22,7 +22,7 @@ clap_complete = "4"
 clap_mangen = "0.2"
 inquire = "0.9"
 comfy-table = "=7.1.3"
-mailparse = "0.15"
+mailparse = "=0.17.0"
 mime_guess = { version = "2.0.5", default-features = false }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
@@ -47,6 +47,7 @@ integration-tests = []
 [dev-dependencies]
 lettre = { version = "=0.11.19", default-features = false, features = ["builder", "mime03", "smtp-transport", "native-tls"] }
 tempfile = ">=3,<3.25"
+parking_lot = "0.12"
 
 [profile.dev]
 incremental = false

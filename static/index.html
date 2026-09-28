@@ -185,7 +185,7 @@
         <article class="example-card">
           <p class="example-kicker">Inbox zero</p>
           <h3>Preview an archive sweep</h3>
-          <pre><code>slashmail move --from "notifications@" --before 1m --to Archive --dry-run</code></pre>
+          <pre><code>slashmail move --from "notifications@" --before 1m --dest Archive --dry-run</code></pre>
         </article>
         <article class="example-card">
           <p class="example-kicker">Back up</p>
@@ -232,7 +232,7 @@
         </article>
         <article>
           <code>read</code>
-          <p>Display matching message content directly in the terminal.</p>
+          <p>Display matching messages, or one exact message by UID, in the terminal or as JSON.</p>
         </article>
         <article>
           <code>delete</code>
@@ -301,7 +301,7 @@
         <div class="agent-action">
           <span class="action-number">02</span>
           <div>
-            <code>slashmail read --from acme --subject invoice --limit 1</code>
+            <code>slashmail read --folder INBOX --uid 1842</code>
             <p>Inspect the exact message</p>
           </div>
         </div>
@@ -329,20 +329,20 @@
         <div class="release-summary">
           <div>
             <span class="release-badge">Latest stable</span>
-            <h3>slashmail <span>v0.7.0</span></h3>
+            <h3>slashmail <span>v0.8.0</span></h3>
           </div>
-          <time datetime="2026-09-10">10 September 2026</time>
+          <time datetime="2026-09-28">28 September 2026</time>
         </div>
-        <p class="release-note">Automatic <span class="inline-code">.env</span> password loading and reliable starred-message actions, with clearer real-world examples.</p>
+        <p class="release-note">Safer bulk actions: <span class="inline-code">move --dest</span>, exact reads with <span class="inline-code">read --uid</span>, UID-scoped moves, TLS for every remote server, and collision-proof exports.</p>
 
-        <div class="download-grid" aria-label="Version 0.7.0 downloads">
+        <div class="download-grid" aria-label="Version 0.8.0 downloads">
           <div class="download-platform">
             <strong>Linux</strong>
             <div class="download-options">
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.7.0/slashmail-linux-x86_64.tar.gz">
+              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-linux-x86_64.tar.gz">
                 <span>x86_64</span><span aria-hidden="true">↓</span>
               </a>
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.7.0/slashmail-linux-aarch64.tar.gz">
+              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-linux-aarch64.tar.gz">
                 <span>ARM64</span><span aria-hidden="true">↓</span>
               </a>
             </div>
@@ -350,10 +350,10 @@
           <div class="download-platform">
             <strong>macOS</strong>
             <div class="download-options">
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.7.0/slashmail-macos-aarch64.tar.gz">
+              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-macos-aarch64.tar.gz">
                 <span>Apple silicon</span><span aria-hidden="true">↓</span>
               </a>
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.7.0/slashmail-macos-x86_64.tar.gz">
+              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-macos-x86_64.tar.gz">
                 <span>Intel</span><span aria-hidden="true">↓</span>
               </a>
             </div>
@@ -361,7 +361,7 @@
           <div class="download-platform">
             <strong>Windows</strong>
             <div class="download-options">
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.7.0/slashmail-windows-x86_64.zip">
+              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-windows-x86_64.zip">
                 <span>x86_64</span><span aria-hidden="true">↓</span>
               </a>
             </div>
@@ -369,7 +369,7 @@
           <div class="download-platform">
             <strong>crates.io</strong>
             <div class="download-options">
-              <a href="https://crates.io/crates/slashmail/0.7.0">
+              <a href="https://crates.io/crates/slashmail/0.8.0">
                 <span>cargo install slashmail</span><span aria-hidden="true">↗</span>
               </a>
             </div>
@@ -377,7 +377,7 @@
         </div>
 
         <div class="release-footer">
-          <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.7.0" target="_blank" rel="noreferrer">Release notes <span aria-hidden="true">→</span></a>
+          <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.0" target="_blank" rel="noreferrer">Release notes <span aria-hidden="true">→</span></a>
           <a href="https://github.com/mwmdev/slashmail/releases" target="_blank" rel="noreferrer">Checksums and all assets <span aria-hidden="true">→</span></a>
         </div>
       </div>
