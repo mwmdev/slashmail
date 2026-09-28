@@ -1,9 +1,11 @@
 use crate::attachment;
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
+use mailparse::MailHeaderMap;
+use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::connection::ImapSession;
-use crate::display::MessageRow;
+use crate::display::{sanitize_terminal_body, sanitize_terminal_field, MessageRow};
 use crate::search;
 
 pub type MessageBodyMap = HashMap<(Option<String>, String, u32), Vec<u8>>;
@@ -45,26 +47,21 @@ pub fn fetch_message_bodies(
     messages: &[MessageRow],
     default_folder: &str,
 ) -> Result<HashMap<(String, u32), Vec<u8>>> {
-    let mut by_folder: HashMap<String, Vec<u32>> = HashMap::new();
-    for msg in messages {
-        let folder = msg
-            .folder
-            .clone()
-            .unwrap_or_else(|| default_folder.to_string());
-        by_folder.entry(folder).or_default().push(msg.uid);
-    }
+    // Validate every row's mailbox identity before fetching any body.
+    let groups = search::group_message_uids(messages, default_folder)?;
 
     let mut uid_bodies: HashMap<(String, u32), Vec<u8>> = HashMap::new();
 
-    for (folder, uids) in &by_folder {
-        session
-            .select(folder)
-            .with_context(|| format!("Failed to select '{folder}'"))?;
+    for (folder, (uid_validity, uids)) in &groups {
+        search::examine_verified(session, folder, *uid_validity)?;
 
         for chunk in &search::build_uid_set(uids) {
-            let fetches = session
-                .uid_fetch(chunk, "BODY.PEEK[]")
-                .with_context(|| format!("Failed to fetch messages from '{folder}'"))?;
+            let fetches = session.uid_fetch(chunk, "BODY.PEEK[]").with_context(|| {
+                format!(
+                    "Failed to fetch messages from '{}'",
+                    sanitize_terminal_field(folder)
+                )
+            })?;
 
             for fetch in fetches.iter() {
                 let uid = match fetch.uid {
@@ -72,7 +69,7 @@ pub fn fetch_message_bodies(
                     None => continue,
                 };
                 if let Some(body) = fetch.body() {
-                    uid_bodies.insert((folder.clone(), uid), body.to_vec());
+                    uid_bodies.insert((folder.to_string(), uid), body.to_vec());
                 }
             }
         }
@@ -97,7 +94,7 @@ pub fn print_messages_with_bodies(
             let account = msg
                 .account
                 .as_deref()
-                .map(|name| format!(" in account '{name}'"))
+                .map(|name| format!(" in account '{}'", sanitize_terminal_field(name)))
                 .unwrap_or_default();
             eprintln!("Warning: could not fetch body for UID {}{account}", msg.uid);
         }
@@ -106,6 +103,74 @@ pub fn print_messages_with_bodies(
             println!("\n{}\n", "─".repeat(60));
         }
     }
+}
+
+#[derive(Serialize)]
+struct ReadMessageJson<'a> {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    account: Option<&'a str>,
+    folder: String,
+    uid: u32,
+    message_id: Option<&'a str>,
+    in_reply_to: &'a [String],
+    references: &'a [String],
+    from: String,
+    to: String,
+    cc: String,
+    date: String,
+    timestamp: i64,
+    subject: String,
+    seen: bool,
+    answered: bool,
+    flagged: bool,
+    body: String,
+    attachments: Vec<attachment::AttachmentSummary>,
+}
+
+/// Render fetched messages as a JSON array, in the order given.
+///
+/// Unlike terminal output, a missing, unparseable, or undecodable body is an
+/// error so scripted callers never mistake raw or partial content for a
+/// decoded result.
+pub fn render_messages_json(
+    messages: &[MessageRow],
+    default_folders: &DefaultFolderMap,
+    bodies: &MessageBodyMap,
+) -> Result<String> {
+    let mut rendered = Vec::with_capacity(messages.len());
+    for msg in messages {
+        let key = message_key(msg, default_folders);
+        let raw = bodies
+            .get(&key)
+            .ok_or_else(|| anyhow!("Could not fetch body for UID {}", msg.uid))?;
+        let parsed = mailparse::parse_mail(raw)
+            .with_context(|| format!("Failed to parse message UID {}", msg.uid))?;
+        let header = |name: &str| parsed.headers.get_first_value(name).unwrap_or_default();
+        rendered.push(ReadMessageJson {
+            account: msg.account.as_deref(),
+            folder: key.1,
+            uid: msg.uid,
+            message_id: msg.message_id.as_deref(),
+            in_reply_to: &msg.in_reply_to,
+            references: &msg.references,
+            from: header("From"),
+            to: header("To"),
+            cc: header("Cc"),
+            date: header("Date"),
+            timestamp: msg.timestamp,
+            subject: header("Subject"),
+            seen: msg.seen,
+            answered: msg.answered,
+            flagged: msg.flagged,
+            body: decoded_text_body(&parsed)
+                .with_context(|| format!("Failed to decode body of message UID {}", msg.uid))?
+                .unwrap_or_default()
+                .trim_end()
+                .to_string(),
+            attachments: attachment::attachment_summaries(&parsed),
+        });
+    }
+    serde_json::to_string(&rendered).context("Failed to serialize messages as JSON")
 }
 
 pub fn message_key(
@@ -125,9 +190,12 @@ fn print_message(raw: &[u8]) {
     let parsed = match mailparse::parse_mail(raw) {
         Ok(m) => m,
         Err(e) => {
-            eprintln!("Warning: failed to parse message: {e}");
+            eprintln!(
+                "Warning: failed to parse message: {}",
+                sanitize_terminal_field(&e.to_string())
+            );
             let text = String::from_utf8_lossy(raw);
-            println!("{text}");
+            println!("{}", sanitize_terminal_body(&text));
             return;
         }
     };
@@ -136,7 +204,7 @@ fn print_message(raw: &[u8]) {
     let get_header = |name: &str| -> String {
         for h in &parsed.headers {
             if h.get_key().eq_ignore_ascii_case(name) {
-                return h.get_value();
+                return sanitize_terminal_field(&h.get_value());
             }
         }
         String::new()
@@ -163,7 +231,7 @@ fn print_message(raw: &[u8]) {
     if text.is_empty() {
         println!("[No text content]");
     } else {
-        println!("{}", text.trim_end());
+        println!("{}", sanitize_terminal_body(text.trim_end()));
     }
 
     if let Some(summary) = render_attachment_summary(&attachments) {
@@ -195,51 +263,156 @@ fn extract_body(parsed: &mailparse::ParsedMail) -> (String, Vec<String>) {
 }
 
 fn display_text_body(parsed: &mailparse::ParsedMail) -> String {
-    let mut text_plain = None;
-    let mut text_html = None;
-    collect_display_text_parts(parsed, &mut text_plain, &mut text_html);
+    collect_body_text(parsed, BodyMode::Display)
+        .expect("display mode handles decode errors")
+        .unwrap_or_default()
+}
 
-    if let Some(text) = text_plain {
-        return text;
+#[derive(Clone, Copy)]
+enum BodyMode {
+    Display,
+    Strict,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Representation {
+    Plain,
+    Html,
+}
+
+fn body_representation(part: &mailparse::ParsedMail<'_>) -> Option<Representation> {
+    if attachment::is_attachment(part) {
+        return None;
     }
-
-    match text_html {
-        Some(html) => match html2text::from_read(html.as_bytes(), 80) {
-            Ok(converted) => converted,
-            Err(error) => {
-                eprintln!("Warning: failed to convert HTML body to text: {error}");
-                html
+    match part.ctype.mimetype.to_ascii_lowercase().as_str() {
+        "text/plain" => Some(Representation::Plain),
+        "text/html" => Some(Representation::Html),
+        "multipart/related" => related_root(part).and_then(body_representation),
+        "multipart/alternative" => {
+            let mut preferred = None;
+            for child in &part.subparts {
+                match body_representation(child) {
+                    Some(Representation::Plain) => preferred = Some(Representation::Plain),
+                    Some(Representation::Html) if preferred.is_none() => {
+                        preferred = Some(Representation::Html);
+                    }
+                    _ => {}
+                }
             }
-        },
-        None => String::new(),
+            preferred
+        }
+        mime if mime.starts_with("multipart/") => {
+            let mut representation = None;
+            for child in &part.subparts {
+                match body_representation(child) {
+                    Some(Representation::Plain) => return Some(Representation::Plain),
+                    Some(Representation::Html) => representation = Some(Representation::Html),
+                    None => {}
+                }
+            }
+            representation
+        }
+        _ => None,
     }
 }
 
-fn collect_display_text_parts(
-    part: &mailparse::ParsedMail,
-    text_plain: &mut Option<String>,
-    text_html: &mut Option<String>,
-) {
-    let mime = part.ctype.mimetype.to_lowercase();
+fn related_root<'a>(part: &'a mailparse::ParsedMail<'_>) -> Option<&'a mailparse::ParsedMail<'a>> {
+    let start = part.ctype.params.get("start");
+    start
+        .and_then(|start| {
+            let wanted = start.trim().trim_start_matches('<').trim_end_matches('>');
+            part.subparts.iter().find(|child| {
+                child
+                    .headers
+                    .get_first_value("Content-ID")
+                    .is_some_and(|id| {
+                        id.trim().trim_start_matches('<').trim_end_matches('>') == wanted
+                    })
+            })
+        })
+        .or_else(|| part.subparts.first())
+}
 
+fn collect_body_text(part: &mailparse::ParsedMail<'_>, mode: BodyMode) -> Result<Option<String>> {
     if attachment::is_attachment(part) {
-        return;
+        return Ok(None);
     }
-
-    if mime.starts_with("multipart/") {
-        for sub in &part.subparts {
-            collect_display_text_parts(sub, text_plain, text_html);
+    let mime = part.ctype.mimetype.to_ascii_lowercase();
+    match mime.as_str() {
+        "text/plain" | "text/html" => {
+            let text = match mode {
+                BodyMode::Display => display_part_text(part, &mime),
+                BodyMode::Strict => part
+                    .get_body()
+                    .with_context(|| format!("Failed to decode {mime} body"))?,
+            };
+            if mime == "text/plain" {
+                return Ok(Some(text));
+            }
+            let converted = match html2text::from_read(text.as_bytes(), 80) {
+                Ok(converted) => converted,
+                Err(error) => match mode {
+                    BodyMode::Strict => {
+                        return Err(error).context("Failed to convert HTML body to text");
+                    }
+                    BodyMode::Display => {
+                        eprintln!(
+                            "Warning: failed to convert HTML body to text: {}",
+                            sanitize_terminal_field(&error.to_string())
+                        );
+                        text
+                    }
+                },
+            };
+            Ok(Some(converted))
         }
-    } else if mime == "text/plain" && text_plain.is_none() {
-        *text_plain = Some(display_part_text(part, "text/plain"));
-    } else if mime == "text/html" && text_html.is_none() {
-        *text_html = Some(display_part_text(part, "text/html"));
+        "multipart/related" => related_root(part)
+            .map(|root| collect_body_text(root, mode))
+            .unwrap_or(Ok(None)),
+        "multipart/alternative" => {
+            let mut plain = None;
+            let mut html = None;
+            for child in &part.subparts {
+                match body_representation(child) {
+                    Some(Representation::Plain) => plain = Some(child),
+                    Some(Representation::Html) => html = Some(child),
+                    None => {}
+                }
+            }
+            match plain.or(html) {
+                Some(child) => collect_body_text(child, mode),
+                None => Ok(None),
+            }
+        }
+        mime if mime.starts_with("multipart/") => {
+            let mut combined: Option<String> = None;
+            for child in &part.subparts {
+                if let Some(text) = collect_body_text(child, mode)? {
+                    if text.trim_end_matches(['\r', '\n']).is_empty() {
+                        continue;
+                    }
+                    match &mut combined {
+                        Some(previous) => {
+                            previous.truncate(previous.trim_end_matches(['\r', '\n']).len());
+                            previous.push_str("\n\n");
+                            previous.push_str(&text);
+                        }
+                        None => combined = Some(text),
+                    }
+                }
+            }
+            Ok(combined)
+        }
+        _ => Ok(None),
     }
 }
 
 fn display_part_text(part: &mailparse::ParsedMail, mime: &str) -> String {
     part.get_body().unwrap_or_else(|error| {
-        eprintln!("Warning: failed to decode {mime} body: {error}");
+        eprintln!(
+            "Warning: failed to decode {mime} body: {}",
+            sanitize_terminal_field(&error.to_string())
+        );
         raw_part_text(part)
     })
 }
@@ -256,59 +429,97 @@ fn raw_part_text(part: &mailparse::ParsedMail) -> String {
     String::from_utf8_lossy(raw).into_owned()
 }
 
-/// Return the first usable, decoded, non-attachment text body.
-///
-/// Plain text is preferred across the full MIME tree. When only HTML is
-/// available it is converted to text. Decode and conversion failures are
-/// returned to the caller so stateful draft orchestration can fail before
-/// mutating a mailbox.
+/// Decode the selected MIME body without silently substituting undecodable alternatives.
 pub(crate) fn decoded_text_body(parsed: &mailparse::ParsedMail) -> Result<Option<String>> {
-    let mut text_plain = None;
-    let mut text_html = None;
-    collect_text_parts(parsed, &mut text_plain, &mut text_html)?;
-
-    if let Some(text) = text_plain {
-        return Ok(Some(text));
-    }
-
-    match text_html {
-        Some(html) => html2text::from_read(html.as_bytes(), 80)
-            .context("Failed to convert HTML body to text")
-            .map(Some),
-        None => Ok(None),
-    }
+    collect_body_text(parsed, BodyMode::Strict)
 }
 
-fn collect_text_parts(
-    part: &mailparse::ParsedMail,
-    text_plain: &mut Option<String>,
-    text_html: &mut Option<String>,
-) -> Result<()> {
-    let mime = part.ctype.mimetype.to_lowercase();
-
-    if attachment::is_attachment(part) {
-        return Ok(());
+#[cfg(test)]
+pub(crate) fn nested_multipart_fixture(depth: usize) -> Vec<u8> {
+    let mut message = b"Content-Type: text/plain\r\n\r\nDeep body".to_vec();
+    for index in 0..depth {
+        let boundary = format!("depth{index}");
+        let mut outer =
+            format!("Content-Type: multipart/mixed; boundary={boundary}\r\n\r\n--{boundary}\r\n")
+                .into_bytes();
+        outer.extend_from_slice(&message);
+        outer.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
+        message = outer;
     }
-
-    if mime.starts_with("multipart/") {
-        for sub in &part.subparts {
-            collect_text_parts(sub, text_plain, text_html)?;
-        }
-    } else if mime == "text/plain" && text_plain.is_none() {
-        *text_plain = Some(
-            part.get_body()
-                .context("Failed to decode text/plain body")?,
-        );
-    } else if mime == "text/html" && text_html.is_none() {
-        *text_html = Some(part.get_body().context("Failed to decode text/html body")?);
-    }
-
-    Ok(())
+    message
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn structural_body_selection_composes_mixed_and_limits_alternatives_and_related() {
+        let raw = b"Content-Type: multipart/mixed; boundary=outer\r\n\r\n\
+--outer\r\nContent-Type: text/plain\r\n\r\nIntroduction\r\n\
+--outer\r\nContent-Type: multipart/alternative; boundary=alt\r\n\r\n\
+--alt\r\nContent-Type: text/html\r\n\r\n<p>Wrong alternative</p>\r\n\
+--alt\r\nContent-Type: text/plain\r\n\r\nFinal instructions\r\n--alt--\r\n\
+--outer\r\nContent-Type: multipart/related; boundary=rel; start=\"<root@site>\"\r\n\r\n\
+--rel\r\nContent-Type: text/plain\r\nContent-ID: <resource@site>\r\n\r\nResource must not leak\r\n\
+--rel\r\nContent-Type: text/html\r\nContent-ID: <root@site>\r\n\r\n<p>Root content</p>\r\n\
+--rel--\r\n--outer--";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        for text in [
+            decoded_text_body(&parsed).unwrap().unwrap(),
+            display_text_body(&parsed),
+        ] {
+            assert!(
+                text.starts_with("Introduction\n\nFinal instructions\n\nRoot content"),
+                "{text}"
+            );
+            assert!(!text.contains("Wrong alternative"));
+            assert!(!text.contains("Resource must not leak"));
+        }
+    }
+
+    #[test]
+    fn unselected_alternative_decode_error_is_not_visited() {
+        let raw = b"Content-Type: multipart/alternative; boundary=x\r\n\r\n\
+--x\r\nContent-Type: text/html\r\nContent-Transfer-Encoding: base64\r\n\r\n%%%\r\n\
+--x\r\nContent-Type: text/plain\r\n\r\nSelected\r\n--x--";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        assert_eq!(
+            decoded_text_body(&parsed).unwrap().as_deref(),
+            Some("Selected")
+        );
+    }
+
+    #[test]
+    fn alternative_picks_last_plain_and_selected_decode_failure_is_strict() {
+        let raw = b"Content-Type: multipart/alternative; boundary=x\r\n\r\n\
+--x\r\nContent-Type: text/plain\r\n\r\nOld\r\n\
+--x\r\nContent-Type: text/plain\r\n\r\nNew\r\n--x--";
+        let parsed = mailparse::parse_mail(raw).unwrap();
+        assert_eq!(decoded_text_body(&parsed).unwrap().as_deref(), Some("New"));
+
+        let broken = b"Content-Type: multipart/alternative; boundary=x\r\n\r\n\
+--x\r\nContent-Type: text/plain\r\n\r\nOld\r\n\
+--x\r\nContent-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n%%%\r\n--x--";
+        let parsed = mailparse::parse_mail(broken).unwrap();
+        assert!(decoded_text_body(&parsed)
+            .unwrap_err()
+            .to_string()
+            .contains("text/plain"));
+        assert!(display_text_body(&parsed).contains("%%%"));
+    }
+
+    #[test]
+    fn upstream_depth_limit_controls_decoded_body() {
+        let accepted = nested_multipart_fixture(100);
+        let parsed = mailparse::parse_mail(&accepted).unwrap();
+        assert_eq!(
+            decoded_text_body(&parsed).unwrap().as_deref(),
+            Some("Deep body")
+        );
+        let rejected = nested_multipart_fixture(101);
+        assert!(mailparse::parse_mail(&rejected).is_err());
+    }
 
     #[test]
     fn extract_body_plain_text() {
@@ -319,20 +530,31 @@ mod tests {
         assert!(attachments.is_empty());
     }
 
-    #[test]
-    fn message_key_uses_account_fallback_folder() {
-        let mut defaults = DefaultFolderMap::new();
-        defaults.insert(Some("work".to_string()), "Sent".to_string());
-        let msg = MessageRow {
+    fn row(folder: Option<&str>) -> MessageRow {
+        MessageRow {
             account: Some("work".to_string()),
             uid: 42,
-            folder: None,
+            folder: folder.map(str::to_string),
             from: String::new(),
             subject: String::new(),
             date: String::new(),
             timestamp: 0,
             size: 0,
-        };
+            message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            seen: false,
+            answered: false,
+            flagged: false,
+            uid_validity: None,
+        }
+    }
+
+    #[test]
+    fn message_key_uses_account_fallback_folder() {
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "Sent".to_string());
+        let msg = row(None);
 
         assert_eq!(
             message_key(&msg, &defaults),
@@ -344,21 +566,86 @@ mod tests {
     fn message_key_prefers_explicit_folder() {
         let mut defaults = DefaultFolderMap::new();
         defaults.insert(Some("work".to_string()), "Sent".to_string());
-        let msg = MessageRow {
-            account: Some("work".to_string()),
-            uid: 42,
-            folder: Some("Archive".to_string()),
-            from: String::new(),
-            subject: String::new(),
-            date: String::new(),
-            timestamp: 0,
-            size: 0,
-        };
+        let msg = row(Some("Archive"));
 
         assert_eq!(
             message_key(&msg, &defaults),
             (Some("work".to_string()), "Archive".to_string(), 42)
         );
+    }
+
+    #[test]
+    fn json_reports_full_headers_resolved_folder_body_and_attachments() {
+        let long_subject = "S".repeat(120);
+        let raw = format!(
+            "From: A Very Long Sender Name <a.very.long.sender.address@example.com>\r\n\
+To: me@example.com\r\n\
+Subject: {long_subject}\r\n\
+Date: Mon, 1 Jun 2026 10:00:00 +0200\r\n\
+Content-Type: multipart/mixed; boundary=b\r\n\r\n\
+--b\r\nContent-Type: text/plain\r\n\r\nSee screenshot\r\n\
+--b\r\nContent-Type: image/png\r\nContent-Disposition: attachment; filename=shot.png\r\n\
+Content-Transfer-Encoding: base64\r\n\r\niVBORw0K\r\n--b--\r\n"
+        );
+        let mut defaults = DefaultFolderMap::new();
+        defaults.insert(Some("work".to_string()), "INBOX".to_string());
+        let mut bodies = MessageBodyMap::new();
+        bodies.insert(
+            (Some("work".to_string()), "INBOX".to_string(), 42),
+            raw.into_bytes(),
+        );
+        let msg = MessageRow {
+            message_id: Some("<m@example.com>".to_string()),
+            references: vec!["<root@example.com>".to_string()],
+            answered: true,
+            ..row(None)
+        };
+
+        let json: serde_json::Value =
+            serde_json::from_str(&render_messages_json(&[msg], &defaults, &bodies).unwrap())
+                .unwrap();
+        let message = &json[0];
+        assert_eq!(message["folder"], "INBOX");
+        assert_eq!(message["account"], "work");
+        assert_eq!(message["subject"], long_subject);
+        assert_eq!(
+            message["from"],
+            "A Very Long Sender Name <a.very.long.sender.address@example.com>"
+        );
+        assert_eq!(message["message_id"], "<m@example.com>");
+        assert_eq!(message["references"][0], "<root@example.com>");
+        assert_eq!(message["answered"], true);
+        assert_eq!(message["body"].as_str().unwrap().trim(), "See screenshot");
+        assert_eq!(
+            message["attachments"],
+            serde_json::json!([{
+                "part": "2",
+                "filename": "shot.png",
+                "content_type": "image/png",
+                "size": 6
+            }])
+        );
+    }
+
+    #[test]
+    fn json_fails_instead_of_omitting_unfetched_message() {
+        let defaults = DefaultFolderMap::new();
+        let error = render_messages_json(&[row(Some("INBOX"))], &defaults, &MessageBodyMap::new())
+            .unwrap_err();
+        assert!(error.to_string().contains("UID 42"));
+    }
+
+    #[test]
+    fn json_fails_instead_of_returning_undecodable_body_as_text() {
+        let mut bodies = MessageBodyMap::new();
+        bodies.insert(
+            (Some("work".to_string()), "INBOX".to_string(), 42),
+            b"Content-Type: text/plain\r\nContent-Transfer-Encoding: base64\r\n\r\n%%%invalid%%%"
+                .to_vec(),
+        );
+        let error = render_messages_json(&[row(Some("INBOX"))], &DefaultFolderMap::new(), &bodies)
+            .unwrap_err();
+        assert!(format!("{error:#}").contains("Failed to decode body of message UID 42"));
     }
 
     #[test]

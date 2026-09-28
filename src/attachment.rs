@@ -1,7 +1,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fmt;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+#[cfg(unix)]
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
@@ -142,13 +144,30 @@ pub fn attachment_names(parsed: &mailparse::ParsedMail<'_>) -> Vec<String> {
     names
 }
 
-pub fn attachments_from_message(raw: &[u8]) -> Result<Vec<ReceivedAttachment>> {
+pub fn attachments_from_message(
+    raw: &[u8],
+    selected: &[PartId],
+) -> Result<Vec<ReceivedAttachment>> {
     let parsed = mailparse::parse_mail(raw).context("Failed to parse message MIME")?;
+    let mut requested = HashSet::new();
+    for part in selected {
+        if !requested.insert(part) {
+            bail!("Duplicate attachment part {part}");
+        }
+    }
+    if !selected.is_empty() {
+        walk_attachment_parts(&parsed, |part, _| {
+            requested.remove(&part);
+        });
+        if let Some(part) = requested.into_iter().next() {
+            bail!("Attachment part {part} not found");
+        }
+    }
     let mut attachments = Vec::new();
     let mut decode_error = None;
 
     walk_attachment_parts(&parsed, |part, parsed_part| {
-        if decode_error.is_some() {
+        if decode_error.is_some() || (!selected.is_empty() && !selected.contains(&part)) {
             return;
         }
         let filename = attachment_filename(parsed_part);
@@ -215,6 +234,32 @@ pub fn render_attachments_json(attachments: &[ReceivedAttachment]) -> Result<Str
     serde_json::to_string(&rows).context("Failed to serialize attachments as JSON")
 }
 
+/// Attachment metadata for `read --json`. Unlike `attachments_from_message`,
+/// an undecodable part does not fail the listing; its `size` is `None`.
+#[derive(Debug, Serialize)]
+pub struct AttachmentSummary {
+    pub part: String,
+    pub filename: String,
+    pub content_type: String,
+    pub size: Option<u64>,
+}
+
+pub fn attachment_summaries(parsed: &mailparse::ParsedMail<'_>) -> Vec<AttachmentSummary> {
+    let mut summaries = Vec::new();
+    walk_attachment_parts(parsed, |part, parsed_part| {
+        summaries.push(AttachmentSummary {
+            part: part.to_string(),
+            filename: attachment_filename(parsed_part),
+            content_type: parsed_part.ctype.mimetype.to_lowercase(),
+            size: parsed_part
+                .get_body_raw()
+                .ok()
+                .map(|bytes| bytes.len() as u64),
+        });
+    });
+    summaries
+}
+
 pub fn render_saved_receipt(saved: &SavedAttachment) -> String {
     format!(
         "Saved attachment: Part={} | File={} | Size={}",
@@ -235,16 +280,23 @@ fn is_windows_invalid(character: char) -> bool {
     )
 }
 
+/// Reserved Win32 device names. Win32 ignores an extension and trailing
+/// spaces after the device name, so `NUL .txt` and `COM¹.log` are devices too.
 fn is_windows_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name);
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
     let upper = stem.to_ascii_uppercase();
-    matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || upper
-            .strip_prefix("COM")
-            .or_else(|| upper.strip_prefix("LPT"))
-            .is_some_and(|number| {
-                matches!(number, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9")
-            })
+    matches!(
+        upper.as_str(),
+        "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$"
+    ) || upper
+        .strip_prefix("COM")
+        .or_else(|| upper.strip_prefix("LPT"))
+        .is_some_and(|number| {
+            matches!(
+                number,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "¹" | "²" | "³"
+            )
+        })
 }
 
 fn truncate_utf8(value: &str, max_bytes: usize) -> String {
@@ -271,7 +323,11 @@ fn filename_with_suffix(name: &str, duplicate: Option<usize>) -> String {
         .map(|number| format!(" ({number})"))
         .unwrap_or_default();
     let max_stem = MAX_FILENAME_BYTES - extension.len() - suffix.len();
-    format!("{}{}{}", truncate_utf8(stem, max_stem), suffix, extension)
+    let mut filename = format!("{}{}{}", truncate_utf8(stem, max_stem), suffix, extension);
+    // Windows drops trailing spaces and dots, which truncation can expose;
+    // two planned names must not collapse into one file there.
+    filename.truncate(filename.trim_end_matches([' ', '.']).len());
+    filename
 }
 
 fn sanitized_filename(attachment: &ReceivedAttachment) -> String {
@@ -292,13 +348,17 @@ fn sanitized_filename(attachment: &ReceivedAttachment) -> String {
         .collect::<String>();
     name.truncate(name.trim_end_matches([' ', '.']).len());
 
+    // Checks run on the bounded name: truncation and trimming can empty it
+    // or leave a device name (`CON` followed by many spaces).
+    let mut name = filename_with_suffix(&name, None);
     if name.is_empty() || matches!(name.as_str(), "." | "..") {
         name = format!("attachment-{}", attachment.part);
     }
     if name.starts_with('.') || is_windows_device_name(&name) {
         name.insert(0, '_');
+        name = filename_with_suffix(&name, None);
     }
-    filename_with_suffix(&name, None)
+    name
 }
 
 fn selected_attachments<'a>(
@@ -399,49 +459,30 @@ pub fn save_attachments(
         }
     }
 
+    // Filesystems that fold case or Unicode normalization can resolve two
+    // planned names to one file; never let a later part replace an earlier one.
+    #[cfg_attr(not(unix), allow(unused_mut))]
+    let mut created: HashSet<(u64, u64)> = HashSet::new();
     let mut saved = Vec::with_capacity(planned.len());
     for (attachment, path) in planned {
-        if force {
-            match fs::symlink_metadata(&path) {
-                Ok(metadata)
-                    if metadata.file_type().is_file() || metadata.file_type().is_symlink() =>
-                {
-                    fs::remove_file(&path).with_context(|| {
-                        format!(
-                            "Failed to replace attachment destination {}",
-                            safe_path(&path)
-                        )
-                    })?;
-                }
-                Ok(_) => {
-                    bail!(
-                        "Attachment destination is not a replaceable file: {}",
-                        safe_path(&path)
-                    );
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(error).with_context(|| {
-                        format!(
-                            "Failed to inspect attachment destination {}",
-                            safe_path(&path)
-                        )
-                    });
-                }
-            }
+        if created_this_run(&created, &path)? {
+            bail!(
+                "Attachment destinations alias the same file: {}",
+                safe_path(&path)
+            );
         }
-
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
+        let file = create_output_file(&path, force)
             .with_context(|| format!("Failed to create attachment {}", safe_path(&path)))?;
-        if let Err(error) = file.write_all(&attachment.bytes) {
-            drop(file);
-            let _ = fs::remove_file(&path);
-            return Err(error)
-                .with_context(|| format!("Failed to write attachment {}", safe_path(&path)));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            let metadata = file
+                .metadata()
+                .with_context(|| format!("Failed to inspect attachment {}", safe_path(&path)))?;
+            created.insert((metadata.dev(), metadata.ino()));
         }
+        write_created_file(file, &path, &attachment.bytes)
+            .with_context(|| format!("Failed to write attachment {}", safe_path(&path)))?;
         saved.push(SavedAttachment {
             part: attachment.part.clone(),
             path,
@@ -450,6 +491,70 @@ pub fn save_attachments(
     }
 
     Ok(saved)
+}
+
+/// Whether the entry at `path` (not following symlinks) is a file this run
+/// already created. File identity is only available on Unix; elsewhere the
+/// case-folded name planning is the only guard.
+fn created_this_run(created: &HashSet<(u64, u64)>, path: &Path) -> Result<bool> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => Ok(created.contains(&(metadata.dev(), metadata.ino()))),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect attachment destination {}",
+                    safe_path(path)
+                )
+            }),
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (created, path);
+        Ok(false)
+    }
+}
+
+/// Exclusively create an owner-only output file. With `force`, an existing
+/// regular file or symlink entry is removed first (never followed); other
+/// entry types are refused. Without `force`, an existing entry yields
+/// `AlreadyExists` so callers choose between skipping and failing.
+pub(crate) fn create_output_file(path: &Path, force: bool) -> io::Result<File> {
+    if force {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() || metadata.file_type().is_symlink() => {
+                fs::remove_file(path)?;
+            }
+            Ok(_) => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "destination is not a replaceable file",
+                ));
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    options.mode(0o600);
+    options.open(path)
+}
+
+/// Write a file returned by [`create_output_file`], removing it if the write
+/// fails so no partial output remains.
+pub(crate) fn write_created_file(mut file: File, path: &Path, bytes: &[u8]) -> io::Result<()> {
+    if let Err(error) = file.write_all(bytes) {
+        drop(file);
+        let _ = fs::remove_file(path);
+        return Err(error);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -467,6 +572,40 @@ mod tests {
             content_type: "application/octet-stream".to_string(),
             bytes: bytes.to_vec(),
         }
+    }
+
+    #[test]
+    fn selected_attachment_ignores_unselected_corrupt_payload_and_validates_first() {
+        let raw = b"Content-Type: multipart/mixed; boundary=x\r\n\r\n\
+--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=bad.bin\r\nContent-Transfer-Encoding: base64\r\n\r\n%%%\r\n\
+--x\r\nContent-Type: application/octet-stream\r\nContent-Disposition: attachment; filename=good.bin\r\nContent-Transfer-Encoding: base64\r\n\r\nZ29vZA==\r\n--x--";
+        let valid = attachments_from_message(raw, &[part("2")]).unwrap();
+        assert_eq!(valid[0].bytes, b"good");
+        assert_eq!(valid.len(), 1);
+        assert!(attachments_from_message(raw, &[part("1")])
+            .unwrap_err()
+            .to_string()
+            .contains("bad.bin"));
+        assert!(attachments_from_message(raw, &[part("2"), part("2")])
+            .unwrap_err()
+            .to_string()
+            .contains("Duplicate"));
+        assert!(attachments_from_message(raw, &[part("1"), part("3")])
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+        assert!(attachments_from_message(raw, &[part("3")]).is_err());
+    }
+
+    #[test]
+    fn upstream_depth_limit_controls_attachment_traversal() {
+        let accepted = crate::read::nested_multipart_fixture(100);
+        assert!(attachments_from_message(&accepted, &[]).unwrap().is_empty());
+        let rejected = crate::read::nested_multipart_fixture(101);
+        assert!(attachments_from_message(&rejected, &[])
+            .unwrap_err()
+            .to_string()
+            .contains("Failed to parse message MIME"));
     }
 
     #[test]
@@ -516,7 +655,7 @@ Content-Disposition: inline; filename=inline.jpg\r\n\
 jpeg\r\n\
 --outer--\r\n";
 
-        let attachments = attachments_from_message(raw).unwrap();
+        let attachments = attachments_from_message(raw, &[]).unwrap();
         assert_eq!(
             attachments
                 .iter()
@@ -543,7 +682,7 @@ jpeg\r\n\
                 .iter()
                 .map(ReceivedAttachment::size)
                 .collect::<Vec<_>>(),
-            [2, 5, 3]
+            [2, 3, 1]
         );
 
         let parsed = mailparse::parse_mail(raw).unwrap();
@@ -560,7 +699,7 @@ Content-Disposition: attachment; filename=data.bin\r\n\
 Content-Transfer-Encoding: base64\r\n\
 \r\n\
 AP8RgA0K";
-        let attachments = attachments_from_message(raw).unwrap();
+        let attachments = attachments_from_message(raw, &[]).unwrap();
         assert_eq!(attachments[0].bytes, [0x00, 0xff, 0x11, 0x80, 0x0d, 0x0a]);
 
         let malformed = b"Content-Type: application/octet-stream\r\n\
@@ -568,7 +707,9 @@ Content-Disposition: attachment; filename=bad.bin\r\n\
 Content-Transfer-Encoding: base64\r\n\
 \r\n\
 %%%";
-        let error = attachments_from_message(malformed).unwrap_err().to_string();
+        let error = attachments_from_message(malformed, &[])
+            .unwrap_err()
+            .to_string();
         assert!(error.contains("part 1"));
         assert!(error.contains("bad.bin"));
     }
@@ -606,6 +747,9 @@ Content-Transfer-Encoding: base64\r\n\
     #[test]
     fn planned_names_are_direct_bounded_nonhidden_and_case_unique() {
         let overlong = "éééééééééé".repeat(30);
+        let spaced = format!("{} {}", "a".repeat(199), "b".repeat(10));
+        let all_spaces = format!("{}x", " ".repeat(200));
+        let padded_device = format!("CON{}x", " ".repeat(197));
         let names = [
             "../escape",
             "a/b",
@@ -622,6 +766,12 @@ Content-Transfer-Encoding: base64\r\n\
             "con.TXT",
             "same.txt",
             "SAME.TXT",
+            "NUL .txt",
+            "COM¹.log",
+            "CONOUT$",
+            spaced.as_str(),
+            all_spaces.as_str(),
+            padded_device.as_str(),
         ];
         let attachments = names
             .iter()
@@ -638,6 +788,7 @@ Content-Transfer-Encoding: base64\r\n\
             assert!(!name.starts_with('.'), "{name}");
             assert!(name.len() <= MAX_FILENAME_BYTES, "{name}");
             assert!(lowercase.insert(name.to_lowercase()), "{name}");
+            assert!(!name.ends_with([' ', '.']), "{name:?}");
         }
         assert_eq!(planned[0].1.file_name().unwrap(), "escape");
         assert_eq!(planned[1].1.file_name().unwrap(), "b");
@@ -647,6 +798,35 @@ Content-Transfer-Encoding: base64\r\n\
         assert_eq!(planned[11].1.file_name().unwrap(), "_CON.tar.gz");
         assert_eq!(planned[12].1.file_name().unwrap(), "_con (2).TXT");
         assert_eq!(planned[14].1.file_name().unwrap(), "SAME (2).TXT");
+        assert_eq!(planned[15].1.file_name().unwrap(), "_NUL .txt");
+        assert_eq!(planned[16].1.file_name().unwrap(), "_COM¹.log");
+        assert_eq!(planned[17].1.file_name().unwrap(), "_CONOUT$");
+        assert_eq!(
+            planned[18].1.file_name().unwrap().to_str().unwrap(),
+            "a".repeat(199)
+        );
+        assert_eq!(planned[19].1.file_name().unwrap(), "attachment-20");
+        assert_eq!(planned[20].1.file_name().unwrap(), "_CON");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_destination_aliasing_a_file_saved_this_run_is_detected() {
+        use std::os::unix::fs::MetadataExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let first = directory.path().join("first.bin");
+        let alias = directory.path().join("alias.bin");
+        fs::write(&first, b"first").unwrap();
+        // A hard link stands in for a name a case- or normalization-folding
+        // filesystem resolves to the same file.
+        fs::hard_link(&first, &alias).unwrap();
+        let metadata = fs::metadata(&first).unwrap();
+        let created = HashSet::from([(metadata.dev(), metadata.ino())]);
+
+        assert!(created_this_run(&created, &alias).unwrap());
+        assert!(!created_this_run(&created, &directory.path().join("new.bin")).unwrap());
+        assert!(!created_this_run(&HashSet::new(), &alias).unwrap());
     }
 
     #[test]
@@ -684,6 +864,15 @@ Content-Transfer-Encoding: base64\r\n\
         assert_eq!(saved.len(), 2);
         assert_eq!(fs::read(directory.path().join("one.bin")).unwrap(), b"one");
         assert_eq!(fs::read(directory.path().join("two.bin")).unwrap(), b"two");
+        #[cfg(unix)]
+        for name in ["one.bin", "two.bin"] {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(directory.path().join(name))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o077, 0, "{name} mode {mode:o}");
+        }
     }
 
     #[test]
@@ -733,8 +922,7 @@ Content-Transfer-Encoding: base64\r\n\
                 .unwrap()
                 .file_type()
                 .is_symlink());
+            assert_eq!(fs::read(destination).unwrap(), [0x00, 0xff, 0x11]);
         }
-
-        assert_eq!(fs::read(destination).unwrap(), [0x00, 0xff, 0x11]);
     }
 }

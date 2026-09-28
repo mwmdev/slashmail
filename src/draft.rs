@@ -73,11 +73,12 @@ pub enum SaveOutcome {
     Unknown,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct DraftReceipt {
     pub account: String,
     pub folder: String,
     pub uid: u32,
+    pub message_id: String,
     pub to: Vec<String>,
     pub cc: Vec<String>,
     pub bcc: Vec<String>,
@@ -266,7 +267,7 @@ fn parsed_message_id(header: &[u8]) -> Option<String> {
     if values.len() != 1 {
         return None;
     }
-    let ids = mailparse::msgidparse(&values[0]).ok()?;
+    let ids = parse_message_ids_with_comments(&values[0])?;
     if ids.len() != 1 || !is_valid_message_id(&ids[0]) {
         return None;
     }
@@ -605,9 +606,8 @@ fn parse_message_id_list(source: &ParsedMail<'_>, field: &str) -> Result<Option<
     let mut parsed = Vec::new();
     for value in values {
         validate_header_text(&value, &format!("source {field}"))?;
-        let ids = match mailparse::msgidparse(&value) {
-            Ok(ids) => ids,
-            Err(_) => return Ok(None),
+        let Some(ids) = parse_message_ids_with_comments(&value) else {
+            return Ok(None);
         };
         if ids.is_empty() || ids.iter().any(|id| !is_valid_message_id(id)) {
             return Ok(None);
@@ -615,6 +615,49 @@ fn parse_message_id_list(source: &ParsedMail<'_>, field: &str) -> Result<Option<
         parsed.extend(ids.iter().cloned());
     }
     Ok(Some(parsed))
+}
+
+fn parse_message_ids_with_comments(value: &str) -> Option<Vec<String>> {
+    let mut cleaned = String::with_capacity(value.len());
+    let mut chars = value.chars();
+    let mut in_id = false;
+    while let Some(character) = chars.next() {
+        match character {
+            '<' if !in_id => {
+                in_id = true;
+                cleaned.push(character);
+            }
+            '>' if in_id => {
+                in_id = false;
+                cleaned.push(character);
+            }
+            '(' if !in_id => {
+                let mut depth = 1;
+                while let Some(character) = chars.next() {
+                    match character {
+                        '\\' => {
+                            chars.next()?;
+                        }
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                if depth != 0 {
+                    return None;
+                }
+                cleaned.push(' ');
+            }
+            ')' if !in_id => return None,
+            _ => cleaned.push(character),
+        }
+    }
+    mailparse::msgidparse(&cleaned).ok().map(|ids| ids.to_vec())
 }
 
 fn is_valid_message_id(id: &str) -> bool {
@@ -797,7 +840,7 @@ fn validate_mailbox(mailbox: &Mailbox, field: &str) -> Result<()> {
 fn validate_header_text(value: &str, field: &str) -> Result<()> {
     if value
         .chars()
-        .any(|character| character == '\0' || character.is_control())
+        .any(|character| character.is_control() && character != '\t')
     {
         bail!("{field} contains a disallowed header control character");
     }
@@ -1253,6 +1296,84 @@ References: <root;bad@example.com>\r\n\r\nBody";
     }
 
     #[test]
+    fn reply_preserves_commented_thread_ids_and_rejects_broken_comments() {
+        let source = b"From: sender@example.com\r\n\
+Message-ID: (parent (nested \\) note)) <parent@example.com>\r\n\
+References: <first@example.com> (escaped \\( note) <second@example.com>\r\n\r\nBody";
+        let composed = compose_reply(source, BodyFormat::Plain, false).unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+        assert_eq!(
+            header_value(&parsed, "In-Reply-To").as_deref(),
+            Some("<parent@example.com>")
+        );
+        assert_eq!(
+            header_value(&parsed, "References").as_deref(),
+            Some("<first@example.com> <second@example.com> <parent@example.com>")
+        );
+        assert!(parse_message_ids_with_comments("<a@example.com> (unterminated").is_none());
+        assert!(parse_message_ids_with_comments("<a@example.com> )").is_none());
+        assert!(parse_message_ids_with_comments("<a@example.com> garbage").is_none());
+        let bad_id = b"From: sender@example.com\r\nMessage-ID: <bad\tid@example.com>\r\n\r\nBody";
+        let composed = compose_reply(bad_id, BodyFormat::Plain, false).unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+        assert_eq!(header_value(&parsed, "In-Reply-To"), None);
+    }
+
+    #[test]
+    fn legal_header_tabs_survive_drafting_but_other_controls_fail() {
+        let mut input = new_input();
+        input.subject = "First\tSecond".to_string();
+        input.to = vec![parse_mailbox("Alice\tSmith <alice@example.com>", "To").unwrap()];
+        let composed = compose_new_draft(input).unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+        assert_eq!(
+            header_value(&parsed, "Subject").as_deref(),
+            Some("First\tSecond")
+        );
+        assert!(header_value(&parsed, "To")
+            .unwrap()
+            .contains("Alice\tSmith"));
+        for control in ['\0', '\r', '\n'] {
+            assert!(validate_header_text(&format!("a{control}b"), "subject").is_err());
+        }
+    }
+
+    #[test]
+    fn reply_quote_contains_every_mixed_text_segment() {
+        let source =
+            b"From: sender@example.com\r\nContent-Type: multipart/mixed; boundary=x\r\n\r\n\
+--x\r\nContent-Type: text/plain\r\n\r\nIntroduction\r\n\
+--x\r\nContent-Type: text/plain\r\n\r\nFinal instructions\r\n--x--";
+        let composed = compose_reply(source, BodyFormat::Plain, true).unwrap();
+        let parsed = mailparse::parse_mail(&composed.bytes).unwrap();
+        let body = parsed.get_body().unwrap();
+        assert!(
+            body.replace("\r\n", "\n")
+                .contains("> Introduction\n>\n> Final instructions"),
+            "{body}"
+        );
+    }
+
+    #[test]
+    fn reply_depth_limit_rejects_before_composition() {
+        for (depth, accepted) in [(100, true), (101, false)] {
+            let mut source = b"From: sender@example.com\r\n".to_vec();
+            source.extend_from_slice(&crate::read::nested_multipart_fixture(depth));
+            let result = compose_reply(&source, BodyFormat::Plain, true);
+            if accepted {
+                let composed = result.unwrap();
+                assert!(mailparse::parse_mail(&composed.bytes)
+                    .unwrap()
+                    .get_body()
+                    .unwrap()
+                    .contains("Deep body"));
+            } else {
+                assert!(result.is_err());
+            }
+        }
+    }
+
+    #[test]
     fn reply_preserves_available_references_without_parent_id() {
         let source = b"From: sender@example.com\r\n\
 References: <root@example.com>\r\n\r\nBody";
@@ -1656,6 +1777,7 @@ Content-Transfer-Encoding: base64\r\n\r\n\
             account: "\u{1b}[31mwork\u{1b}[0m".to_string(),
             folder: "Drafts\u{1b}]0;malicious title\u{7}\nInjected".to_string(),
             uid: 42,
+            message_id: "<draft@example.com>".to_string(),
             to: vec!["A <a@example.com>\tB".to_string()],
             cc: Vec::new(),
             bcc: vec!["secret@example.com\u{9b}2J".to_string()],

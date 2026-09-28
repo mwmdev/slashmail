@@ -1,12 +1,18 @@
 use anyhow::{bail, Context, Result};
 use regex::Regex;
+use std::collections::BTreeMap;
 
 use crate::connection::ImapSession;
-use crate::display::MessageRow;
+use crate::display::{sanitize_terminal_field, MessageRow};
+use crate::draft::MailboxListing;
+use imap::types::Flag;
+
+pub const LITERAL_PLUS_REQUIRED: &str = "Non-ASCII search requires server support for LITERAL+";
 
 pub struct SearchCriteria {
     pub folder: String,
     pub all_folders: bool,
+    pub uid: Option<u32>,
     pub subject: Option<String>,
     pub from: Option<String>,
     pub to: Option<String>,
@@ -36,6 +42,40 @@ pub fn imap_quote(s: &str) -> String {
     let clean = sanitize(s);
     let escaped = clean.replace('\\', "\\\\").replace('"', "\\\"");
     format!("\"{escaped}\"")
+}
+
+/// Serialize a user search term. ASCII terms become quoted strings; other
+/// terms become UTF-8 non-synchronizing literals (RFC 7888), whose length
+/// is the byte count of the sanitized text.
+fn quote_search_term(value: &str) -> String {
+    let clean = sanitize(value);
+    if clean.is_ascii() {
+        imap_quote(&clean)
+    } else {
+        format!("{{{}+}}\r\n{clean}", clean.len())
+    }
+}
+
+/// Reject a built query the connected server cannot receive. Non-ASCII
+/// terms are sent as LITERAL+ literals; without that extension the search
+/// fails here rather than silently matching nothing.
+pub fn ensure_query_supported(session: &ImapSession, query: &str) -> Result<()> {
+    if !query.is_ascii() && !session.has_capability("LITERAL+") {
+        bail!(LITERAL_PLUS_REQUIRED);
+    }
+    Ok(())
+}
+
+/// Mailbox names are sent to the server unchanged; reject names that cannot
+/// be sent safely instead of silently altering them.
+pub fn validate_folder_name(folder: &str) -> Result<()> {
+    if folder.is_empty() {
+        bail!("Folder name must not be empty");
+    }
+    if folder.chars().any(char::is_control) {
+        bail!("Folder name must not contain control characters");
+    }
+    Ok(())
 }
 
 const MONTH_ABBRS: [&str; 12] = [
@@ -158,23 +198,27 @@ fn parse_date(s: &str) -> Result<String> {
 pub fn build_query(criteria: &SearchCriteria) -> Result<String> {
     let mut parts = Vec::new();
 
-    if let Some(ref subj) = criteria.subject {
-        parts.push(format!("SUBJECT {}", imap_quote(subj)));
+    if let Some(uid) = criteria.uid {
+        parts.push(format!("UID {uid}"));
     }
-    if let Some(ref from) = criteria.from {
-        parts.push(format!("FROM {}", imap_quote(from)));
-    }
-    if let Some(ref to) = criteria.to {
-        parts.push(format!("TO {}", imap_quote(to)));
-    }
-    if let Some(ref cc) = criteria.cc {
-        parts.push(format!("CC {}", imap_quote(cc)));
-    }
-    if let Some(ref body) = criteria.body {
-        parts.push(format!("BODY {}", imap_quote(body)));
-    }
-    if let Some(ref text) = criteria.text {
-        parts.push(format!("TEXT {}", imap_quote(text)));
+    let text_terms = [
+        ("SUBJECT", "subject", &criteria.subject),
+        ("FROM", "from", &criteria.from),
+        ("TO", "to", &criteria.to),
+        ("CC", "cc", &criteria.cc),
+        ("BODY", "body", &criteria.body),
+        ("TEXT", "text", &criteria.text),
+    ];
+    for (key, flag, value) in text_terms {
+        if let Some(value) = value {
+            // An empty IMAP substring matches every message, so a filter
+            // emptied by an unset variable or stripped controls must not
+            // silently widen the selection.
+            if sanitize(value).trim().is_empty() {
+                bail!("--{flag} must not be empty");
+            }
+            parts.push(format!("{key} {}", quote_search_term(value)));
+        }
     }
     if criteria.seen {
         parts.push("SEEN".to_string());
@@ -241,17 +285,6 @@ fn parse_size(s: &str) -> Result<u64> {
         .ok_or_else(|| anyhow::anyhow!("Size '{s}' is too large"))
 }
 
-/// Truncate a string to at most `max` characters, appending "..." if truncated.
-/// Safe for multi-byte UTF-8.
-fn truncate_str(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
-        s.to_string()
-    } else {
-        let truncated: String = s.chars().take(max.saturating_sub(3)).collect();
-        format!("{truncated}...")
-    }
-}
-
 /// Parse SORT response bytes into a Vec of UIDs (preserving server order).
 fn parse_sort_response(data: &[u8]) -> Result<Vec<u32>> {
     let text = String::from_utf8_lossy(data);
@@ -301,10 +334,27 @@ fn try_uid_sort(session: &mut ImapSession, query: &str) -> Result<Option<Vec<u32
             Ok(Some(uids))
         }
         Err(e) => {
-            eprintln!("SORT failed, falling back to SEARCH: {e}");
+            eprintln!(
+                "SORT failed, falling back to SEARCH: {}",
+                sanitize_terminal_field(&e.to_string())
+            );
             Ok(None)
         }
     }
+}
+
+/// Number of UIDs in a set built by `build_uid_set` (sorted, deduplicated).
+pub fn uid_set_len(set: &str) -> usize {
+    set.split(',')
+        .map(|part| match part.split_once(':') {
+            Some((start, end)) => {
+                let start: usize = start.parse().unwrap_or(0);
+                let end: usize = end.parse().unwrap_or(0);
+                end.saturating_sub(start) + 1
+            }
+            None => 1,
+        })
+        .sum()
 }
 
 /// Build UID set strings with range compression, chunked to stay under IMAP command length limits.
@@ -366,11 +416,12 @@ fn fetch_messages(
     include_folder: bool,
     limit: Option<usize>,
 ) -> Result<Vec<MessageRow>> {
-    // Sanitize folder name for the raw SORT path
-    let clean_folder = sanitize(folder);
-    session
-        .select(&clean_folder)
-        .with_context(|| format!("Failed to select folder '{clean_folder}'"))?;
+    validate_folder_name(folder)?;
+    let safe_folder = sanitize_terminal_field(folder);
+    let opened = session
+        .examine(folder)
+        .with_context(|| format!("Failed to examine folder '{safe_folder}'"))?;
+    let uid_validity = opened.uid_validity;
 
     // Try server-side SORT first, fall back to SEARCH + client sort
     let (ordered_uids, pre_sorted) = match try_uid_sort(session, query)? {
@@ -394,6 +445,7 @@ fn fetch_messages(
     }
 
     let uid_chunks = build_uid_set(&ordered_uids);
+    let requested: std::collections::HashSet<u32> = ordered_uids.iter().copied().collect();
 
     // FETCH results may come back in arbitrary order; index by UID
     let mut by_uid = std::collections::HashMap::new();
@@ -402,7 +454,7 @@ fn fetch_messages(
         let fetches = session
             .uid_fetch(
                 chunk,
-                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Subject From Date)])",
+                "(UID FLAGS RFC822.SIZE BODY.PEEK[HEADER.FIELDS (Subject From Date Message-ID In-Reply-To References)])",
             )
             .context("IMAP FETCH failed")?;
 
@@ -412,18 +464,26 @@ fn fetch_messages(
                 _ => {
                     if !warned_invalid_uid {
                         eprintln!(
-                            "Warning: skipping fetched message(s) with missing/invalid UID in '{clean_folder}'"
+                            "Warning: skipping fetched message(s) with missing/invalid UID in '{safe_folder}'"
                         );
                         warned_invalid_uid = true;
                     }
                     continue;
                 }
             };
+            // Servers may interleave unsolicited FETCH responses (flag changes
+            // made by other clients). Only searched UIDs become rows, and a
+            // flags-only response never replaces a row that has headers.
+            if !requested.contains(&uid) || (fetch.header().is_none() && by_uid.contains_key(&uid))
+            {
+                continue;
+            }
             let size = fetch.size.unwrap_or(0);
             let header_bytes = fetch.header().unwrap_or(b"");
             let header_str = String::from_utf8_lossy(header_bytes);
 
             let (mut subject, mut from, mut date) = (String::new(), String::new(), String::new());
+            let (mut message_id, mut in_reply_to, mut references) = (None, Vec::new(), Vec::new());
 
             let parsed = mailparse::parse_headers(header_bytes);
             if let Ok((headers, _)) = parsed {
@@ -432,6 +492,9 @@ fn fetch_messages(
                         "subject" => subject = h.get_value(),
                         "from" => from = h.get_value(),
                         "date" => date = h.get_value(),
+                        "message-id" => message_id = message_ids(&h.get_value()).into_iter().next(),
+                        "in-reply-to" => in_reply_to = message_ids(&h.get_value()),
+                        "references" => references = message_ids(&h.get_value()),
                         _ => {}
                     }
                 }
@@ -443,25 +506,27 @@ fn fetch_messages(
                         from = v.to_string();
                     } else if let Some(v) = line.strip_prefix("Date: ") {
                         date = v.to_string();
+                    } else if let Some(v) = line.strip_prefix("Message-ID: ") {
+                        message_id = message_ids(v).into_iter().next();
+                    } else if let Some(v) = line.strip_prefix("In-Reply-To: ") {
+                        in_reply_to = message_ids(v);
+                    } else if let Some(v) = line.strip_prefix("References: ") {
+                        references = message_ids(v);
                     }
                 }
             }
 
-            from = truncate_str(&from, 40);
-            subject = truncate_str(&subject, 60);
+            let flags = fetch.flags();
+            let has_flag = |wanted, name| has_system_flag(flags, wanted, name);
+
             let timestamp = mailparse::dateparse(&date).unwrap_or(0);
-
-            if let Some(pos) = date.find(" +").or_else(|| date.find(" -")) {
-                date.truncate(pos);
-            }
-
             by_uid.insert(
                 uid,
                 MessageRow {
                     account: None,
                     uid,
                     folder: if include_folder {
-                        Some(clean_folder.clone())
+                        Some(folder.to_string())
                     } else {
                         None
                     },
@@ -470,6 +535,13 @@ fn fetch_messages(
                     date,
                     timestamp,
                     size,
+                    message_id,
+                    in_reply_to,
+                    references,
+                    seen: has_flag(Flag::Seen, "\\Seen"),
+                    answered: has_flag(Flag::Answered, "\\Answered"),
+                    flagged: has_flag(Flag::Flagged, "\\Flagged"),
+                    uid_validity,
                 },
             );
         }
@@ -491,36 +563,142 @@ fn fetch_messages(
     }
 }
 
-pub fn folders_to_skip(name: &str) -> bool {
-    let lower = name.to_lowercase();
-    lower == "trash"
-        || lower == "spam"
-        || lower == "junk"
-        || lower.contains("all mail")
-        || lower == "[gmail]/all mail"
-        || lower == "[gmail]/spam"
-        || lower == "[gmail]/trash"
+/// IMAP flag names are case-insensitive, but the imap crate only maps the
+/// canonical spellings to system variants; others arrive as `Flag::Custom`.
+fn has_system_flag(flags: &[Flag<'_>], wanted: Flag<'_>, name: &str) -> bool {
+    flags.iter().any(|flag| {
+        *flag == wanted || matches!(flag, Flag::Custom(custom) if custom.eq_ignore_ascii_case(name))
+    })
+}
+
+/// Extract every angle-bracketed message ID from a Message-ID, In-Reply-To,
+/// or References header value, keeping the brackets. Brackets inside
+/// comments `(...)` or quoted strings outside an ID are ignored, as are
+/// commas, legacy phrases, and malformed tokens.
+pub fn message_ids(value: &str) -> Vec<String> {
+    let mut ids = Vec::new();
+    let mut comment_depth = 0usize;
+    let mut in_quote = false;
+    let mut escaped = false;
+    // Byte offset just after the current '<', and whether the ID so far is valid.
+    let mut open: Option<(usize, bool)> = None;
+
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        if character == '\\' && (in_quote || comment_depth > 0) {
+            escaped = true;
+            continue;
+        }
+        if comment_depth > 0 {
+            match character {
+                '(' => comment_depth += 1,
+                ')' => comment_depth -= 1,
+                _ => {}
+            }
+            continue;
+        }
+        if character == '"' {
+            in_quote = !in_quote;
+            continue;
+        }
+        if in_quote {
+            if character.is_control() {
+                if let Some((_, valid)) = open.as_mut() {
+                    *valid = false;
+                }
+            }
+            continue;
+        }
+        match (character, open.as_mut()) {
+            ('<', _) => open = Some((index + 1, true)),
+            ('>', Some((start, valid))) => {
+                let inner = &value[*start..index];
+                if *valid && !inner.is_empty() {
+                    ids.push(format!("<{inner}>"));
+                }
+                open = None;
+            }
+            ('(', None) => comment_depth = 1,
+            (c, Some((_, valid))) if c.is_whitespace() || c.is_control() => *valid = false,
+            _ => {}
+        }
+    }
+    ids
+}
+
+/// Mailboxes excluded from `--all-folders`: special-use `\All`, `\Trash`, and
+/// `\Junk` mailboxes, and well-known aggregate, trash, and spam names (exact,
+/// case-insensitive) for servers without special-use attributes.
+pub fn folders_to_skip(mailbox: &MailboxListing) -> bool {
+    if mailbox.attributes.iter().any(|attribute| {
+        ["\\All", "\\Trash", "\\Junk"]
+            .iter()
+            .any(|special| attribute.eq_ignore_ascii_case(special))
+    }) {
+        return true;
+    }
+    let lower = mailbox.name.to_lowercase();
+    matches!(
+        lower.as_str(),
+        "all mail"
+            | "[gmail]/all mail"
+            | "trash"
+            | "spam"
+            | "junk"
+            | "[gmail]/spam"
+            | "[gmail]/trash"
+    )
+}
+
+/// Whether two mailbox names refer to the same mailbox: exact comparison,
+/// except INBOX, which IMAP defines as case-insensitive.
+pub fn same_mailbox(a: &str, b: &str) -> bool {
+    a == b || (a.eq_ignore_ascii_case("INBOX") && b.eq_ignore_ascii_case("INBOX"))
+}
+
+/// List every mailbox name included in `--all-folders` operations.
+pub fn searchable_folders(session: &mut ImapSession) -> Result<Vec<String>> {
+    let folders = session.list_all().context("Failed to list folders")?;
+    Ok(folders
+        .into_iter()
+        .filter(|mailbox| !folders_to_skip(mailbox))
+        .map(|mailbox| mailbox.name)
+        .collect())
 }
 
 pub fn search(session: &mut ImapSession, criteria: &SearchCriteria) -> Result<Vec<MessageRow>> {
+    search_excluding(session, criteria, None)
+}
+
+/// Search for messages to move to `exclude`: with `--all-folders` that
+/// mailbox is not searched, and naming it as the single source is an error.
+pub fn search_excluding(
+    session: &mut ImapSession,
+    criteria: &SearchCriteria,
+    exclude: Option<&str>,
+) -> Result<Vec<MessageRow>> {
     let query = build_query(criteria)?;
+    ensure_query_supported(session, &query)?;
 
     if criteria.all_folders {
-        let folders = session
-            .list(Some(""), Some("*"))
-            .context("Failed to list folders")?;
-        let folder_names: Vec<String> = folders
-            .iter()
-            .map(|f| f.name().to_string())
-            .filter(|n| !folders_to_skip(n))
-            .collect();
+        let folder_names = searchable_folders(session)?;
 
         let mut all_messages = Vec::new();
         for folder in &folder_names {
+            if exclude.is_some_and(|excluded| same_mailbox(folder, excluded)) {
+                continue;
+            }
             match fetch_messages(session, folder, &query, true, None) {
                 Ok(msgs) => all_messages.extend(msgs),
                 Err(e) => {
-                    eprintln!("Warning: skipping folder '{folder}': {e}");
+                    eprintln!(
+                        "Warning: skipping folder '{}': {}",
+                        sanitize_terminal_field(folder),
+                        sanitize_terminal_field(&format!("{e:#}"))
+                    );
                 }
             }
         }
@@ -530,22 +708,119 @@ pub fn search(session: &mut ImapSession, criteria: &SearchCriteria) -> Result<Ve
         }
         Ok(all_messages)
     } else {
+        if exclude.is_some_and(|excluded| same_mailbox(&criteria.folder, excluded)) {
+            bail!(
+                "Source and destination folder are the same ('{}')",
+                sanitize_terminal_field(&criteria.folder)
+            );
+        }
         ensure_folder_exists(session, &criteria.folder)?;
         fetch_messages(session, &criteria.folder, &query, false, criteria.limit)
     }
 }
 
+/// Confirm that `folder` names an existing mailbox. The LIST pattern is the
+/// constant `*` so user input never acts as a wildcard pattern; names are
+/// compared exactly (INBOX case-insensitively, as IMAP defines).
 pub fn ensure_folder_exists(session: &mut ImapSession, folder: &str) -> Result<()> {
-    let folders = session
-        .list(Some(""), Some(folder))
-        .context("Failed to list folders")?;
-    let exists = folders.iter().any(|f| f.name() == folder);
+    validate_folder_name(folder)?;
+    let folders = session.list_all().context("Failed to list folders")?;
+    let exists = folders
+        .iter()
+        .any(|mailbox| same_mailbox(&mailbox.name, folder));
     if !exists {
         bail!(
-            "Folder '{folder}' does not exist. Use `slashmail status` to list available folders."
+            "Folder '{}' does not exist. Use `slashmail status` to list available folders.",
+            sanitize_terminal_field(folder)
         );
     }
     Ok(())
+}
+
+/// Group searched rows by source mailbox with the UIDVALIDITY captured at
+/// search time. Every row of a group must carry the same nonzero identity.
+pub fn group_message_uids<'a>(
+    messages: &'a [MessageRow],
+    default_folder: &'a str,
+) -> Result<BTreeMap<&'a str, (u32, Vec<u32>)>> {
+    let mut groups: BTreeMap<&'a str, (u32, Vec<u32>)> = BTreeMap::new();
+    for message in messages {
+        let folder = message.folder.as_deref().unwrap_or(default_folder);
+        let uid_validity = match message.uid_validity {
+            Some(value) if value != 0 => value,
+            _ => bail!(
+                "Missing UIDVALIDITY for searched mailbox '{}'",
+                sanitize_terminal_field(folder)
+            ),
+        };
+        let (expected, uids) = groups
+            .entry(folder)
+            .or_insert_with(|| (uid_validity, Vec::new()));
+        if *expected != uid_validity {
+            bail!(
+                "Searched messages from '{}' have inconsistent UIDVALIDITY",
+                sanitize_terminal_field(folder)
+            );
+        }
+        uids.push(message.uid);
+    }
+    Ok(groups)
+}
+
+/// SELECT `folder` read-write and require the UIDVALIDITY recorded when it
+/// was searched, so UID mutations never act on a different mailbox incarnation.
+pub fn select_verified(
+    session: &mut ImapSession,
+    folder: &str,
+    expected_uid_validity: u32,
+) -> Result<()> {
+    open_verified(session, folder, expected_uid_validity, true)
+}
+
+/// EXAMINE `folder` read-only with the same UIDVALIDITY check, for body
+/// fetches that must not change mailbox state.
+pub fn examine_verified(
+    session: &mut ImapSession,
+    folder: &str,
+    expected_uid_validity: u32,
+) -> Result<()> {
+    open_verified(session, folder, expected_uid_validity, false)
+}
+
+fn open_verified(
+    session: &mut ImapSession,
+    folder: &str,
+    expected_uid_validity: u32,
+    writable: bool,
+) -> Result<()> {
+    validate_folder_name(folder)?;
+    let safe_folder = sanitize_terminal_field(folder);
+    let opened = if writable {
+        session.select(folder)
+    } else {
+        session.examine(folder)
+    };
+    let opened = opened.with_context(|| {
+        let verb = if writable { "select" } else { "examine" };
+        format!("Failed to {verb} '{safe_folder}'")
+    })?;
+    if opened.uid_validity != Some(expected_uid_validity) {
+        bail!("Mailbox UIDVALIDITY changed; search again before acting ('{safe_folder}')");
+    }
+    Ok(())
+}
+
+/// The UIDs of `uid_set` that still exist in the selected mailbox. UID
+/// commands silently ignore missing UIDs, so actions run on and report only
+/// these.
+pub fn existing_uids(session: &mut ImapSession, uid_set: &str) -> Result<Vec<u32>> {
+    let mut uids: Vec<u32> = session
+        .uid_search(&format!("UID {uid_set}"))
+        .context("IMAP SEARCH failed")?
+        .into_iter()
+        .collect();
+    uids.sort_unstable();
+    Ok(uids)
 }
 
 #[cfg(test)]
@@ -710,26 +985,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_str_short_unchanged() {
-        assert_eq!(truncate_str("hello", 10), "hello");
-    }
-
-    #[test]
-    fn truncate_str_exact_length_unchanged() {
-        assert_eq!(truncate_str("hello", 5), "hello");
-    }
-
-    #[test]
-    fn truncate_str_long_adds_ellipsis() {
-        assert_eq!(truncate_str("hello world", 8), "hello...");
-    }
-
-    #[test]
-    fn truncate_str_empty() {
-        assert_eq!(truncate_str("", 10), "");
-    }
-
-    #[test]
     fn build_query_no_criteria_returns_all() {
         let c = default_test_criteria();
         assert_eq!(build_query(&c).unwrap(), "ALL");
@@ -845,19 +1100,6 @@ mod tests {
     }
 
     #[test]
-    fn folders_to_skip_filters_correctly() {
-        assert!(folders_to_skip("Trash"));
-        assert!(folders_to_skip("Spam"));
-        assert!(folders_to_skip("Junk"));
-        assert!(folders_to_skip("[Gmail]/All Mail"));
-        assert!(folders_to_skip("[Gmail]/Spam"));
-        assert!(folders_to_skip("[Gmail]/Trash"));
-        assert!(!folders_to_skip("INBOX"));
-        assert!(!folders_to_skip("Archive"));
-        assert!(!folders_to_skip("Sent"));
-    }
-
-    #[test]
     fn build_uid_set_empty() {
         assert!(build_uid_set(&[]).is_empty());
     }
@@ -918,11 +1160,127 @@ mod tests {
         );
     }
 
+    #[test]
+    fn build_query_uid_narrows_other_filters() {
+        let mut c = default_test_criteria();
+        c.uid = Some(42);
+        assert_eq!(build_query(&c).unwrap(), "UID 42");
+        c.subject = Some("report".into());
+        assert_eq!(build_query(&c).unwrap(), "UID 42 SUBJECT \"report\"");
+    }
+
+    #[test]
+    fn non_ascii_terms_become_byte_counted_literals() {
+        let mut c = default_test_criteria();
+        c.subject = Some("café".into());
+        assert_eq!(build_query(&c).unwrap(), "SUBJECT {5+}\r\ncafé");
+
+        c.from = Some("Zoë \"Q\"\r\n".into());
+        c.to = Some("a\"b\\c".into());
+        c.unseen = true;
+        assert_eq!(
+            build_query(&c).unwrap(),
+            "SUBJECT {5+}\r\ncafé FROM {8+}\r\nZoë \"Q\" TO \"a\\\"b\\\\c\" UNSEEN"
+        );
+    }
+
+    #[test]
+    fn folder_names_are_validated_not_rewritten() {
+        for valid in ["INBOX", "Projects \"Q1\" *%", "Back\\slash", "Ärger"] {
+            assert!(validate_folder_name(valid).is_ok(), "{valid:?}");
+        }
+        for invalid in ["", "Bad\rName", "Bad\nName", "Bad\0Name", "Bad\u{85}Name"] {
+            assert!(validate_folder_name(invalid).is_err(), "{invalid:?}");
+        }
+    }
+
+    fn searched_row(folder: Option<&str>, uid: u32, uid_validity: Option<u32>) -> MessageRow {
+        MessageRow {
+            account: None,
+            uid,
+            folder: folder.map(str::to_string),
+            from: String::new(),
+            subject: String::new(),
+            date: String::new(),
+            timestamp: 0,
+            size: 0,
+            message_id: None,
+            in_reply_to: Vec::new(),
+            references: Vec::new(),
+            seen: false,
+            answered: false,
+            flagged: false,
+            uid_validity,
+        }
+    }
+
+    #[test]
+    fn grouping_binds_uids_to_their_searched_mailbox_identity() {
+        assert!(group_message_uids(&[], "INBOX").unwrap().is_empty());
+
+        let rows = [
+            searched_row(None, 3, Some(10)),
+            searched_row(Some("Archive"), 3, Some(20)),
+            searched_row(None, 5, Some(10)),
+        ];
+        let groups = group_message_uids(&rows, "INBOX").unwrap();
+        assert_eq!(groups["INBOX"], (10, vec![3, 5]));
+        assert_eq!(groups["Archive"], (20, vec![3]));
+
+        for identity in [None, Some(0)] {
+            let rows = [searched_row(None, 1, identity)];
+            let error = group_message_uids(&rows, "INBOX").unwrap_err();
+            assert!(error
+                .to_string()
+                .contains("Missing UIDVALIDITY for searched mailbox"));
+        }
+
+        let inconsistent = [
+            searched_row(None, 1, Some(10)),
+            searched_row(None, 2, Some(11)),
+        ];
+        assert!(group_message_uids(&inconsistent, "INBOX").is_err());
+    }
+
+    #[test]
+    fn system_flags_match_case_insensitively() {
+        let flags = [Flag::Custom("\\SEEN".into()), Flag::Answered];
+        assert!(has_system_flag(&flags, Flag::Seen, "\\Seen"));
+        assert!(has_system_flag(&flags, Flag::Answered, "\\Answered"));
+        assert!(!has_system_flag(&flags, Flag::Flagged, "\\Flagged"));
+    }
+
+    #[test]
+    fn message_ids_extracts_bracketed_ids_and_skips_noise() {
+        assert_eq!(
+            message_ids("<root@example.com> <mid@example.com>"),
+            ["<root@example.com>", "<mid@example.com>"]
+        );
+        assert_eq!(
+            message_ids("<a@x>,<b@y>  (Alice's message of Monday)"),
+            ["<a@x>", "<b@y>"]
+        );
+        assert_eq!(
+            message_ids("junk <broken <real@example.com> <> <sp ace@x> <tail"),
+            ["<real@example.com>"]
+        );
+        assert!(message_ids("not-a-message-id").is_empty());
+        assert_eq!(
+            message_ids(r#"<id@x> (from "Bob" <bob@example.com>) "Re: <fake@x>" <next@x>"#),
+            ["<id@x>", "<next@x>"]
+        );
+        assert_eq!(
+            message_ids(r#"<"john doe"@example.com> (nested (<no@x>) \) ok) <after@x>"#),
+            [r#"<"john doe"@example.com>"#, "<after@x>"]
+        );
+    }
+
     /// Helper to build a default SearchCriteria with all fields set to None/false.
     fn default_test_criteria() -> SearchCriteria {
         SearchCriteria {
             folder: "INBOX".into(),
             all_folders: false,
+            uid: None,
             subject: None,
             from: None,
             to: None,
@@ -984,5 +1342,48 @@ mod tests {
         let mut c = default_test_criteria();
         c.draft = true;
         assert_eq!(build_query(&c).unwrap(), "DRAFT");
+    }
+
+    #[test]
+    fn empty_or_control_only_text_filters_are_rejected() {
+        for value in ["", "   ", "\u{1b}", "\t\r\n"] {
+            let mut c = default_test_criteria();
+            c.from = Some(value.into());
+            let error = build_query(&c).unwrap_err();
+            assert_eq!(error.to_string(), "--from must not be empty", "{value:?}");
+        }
+        let mut c = default_test_criteria();
+        c.text = Some("\u{0}".into());
+        assert_eq!(
+            build_query(&c).unwrap_err().to_string(),
+            "--text must not be empty"
+        );
+        c.text = Some(" x ".into());
+        assert_eq!(build_query(&c).unwrap(), "TEXT \" x \"");
+    }
+
+    #[test]
+    fn all_folders_skips_special_use_trash_and_junk_by_attribute() {
+        let listing = |name: &str, attributes: &[&str]| MailboxListing {
+            name: name.into(),
+            attributes: attributes.iter().map(|a| a.to_string()).collect(),
+        };
+        assert!(folders_to_skip(&listing("Deleted Items", &["\\Trash"])));
+        assert!(folders_to_skip(&listing(
+            "Junk Email",
+            &["\\HasNoChildren", "\\junk"]
+        )));
+        assert!(folders_to_skip(&listing("Everything", &["\\All"])));
+        assert!(folders_to_skip(&listing("Trash", &[])));
+        assert!(!folders_to_skip(&listing("Deleted Items", &[])));
+        assert!(!folders_to_skip(&listing("Archive", &["\\Archive"])));
+        assert!(!folders_to_skip(&listing("Small mail", &[])));
+    }
+
+    #[test]
+    fn mailbox_identity_is_exact_except_inbox() {
+        assert!(same_mailbox("inbox", "INBOX"));
+        assert!(same_mailbox("Archive", "Archive"));
+        assert!(!same_mailbox("archive", "Archive"));
     }
 }

@@ -7,6 +7,55 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-28
+
+### Added
+
+- `read --uid <UID>` reads one exact message from the selected folder and fails when that UID does not exist
+- `read --json` prints full headers, thread identifiers, flags, decoded text body, and attachment part metadata
+- `search --json` rows include `message_id`, `in_reply_to`, `references`, and `seen`/`answered`/`flagged` state
+- `draft --json` and `reply --json` print the saved-draft receipt, including the draft UID and Message-ID, as JSON
+
+### Changed
+
+- **Breaking:** `move` takes its destination as `--dest <FOLDER>`; `--to` is the recipient filter for every command. `move --to X` previously failed to parse in every release since 0.3.0
+- **Breaking:** plaintext IMAP is refused for every non-loopback host (previously a warning). Loopback plaintext, such as ProtonMail Bridge, still works
+- **Breaking:** `export` percent-encodes folder names in file names (`Work/Projects` → `Work%2FProjects_1.eml`, `Work_Projects` → `Work%5FProjects_1.eml`; on Windows lowercase letters are encoded too). Existing exports are not renamed
+- **Breaking:** minimum supported Rust version is 1.88, required by mailparse 0.17
+- **Breaking:** `-f/--folder` and `--all-folders` can no longer be combined; `--folder` was previously ignored silently
+- Empty or whitespace/control-only text filters (`--subject`, `--from`, `--to`, `--cc`, `--body`, `--text`) are rejected instead of matching every message
+- `--all-folders` also skips mailboxes marked `\Trash` or `\Junk` (such as "Deleted Items" and "Junk Email"); `delete` and `move` never search their destination, and naming the destination as the source folder is an error
+- `search`, `read`, `count`, `export`, and `--dry-run` open folders read-only with `EXAMINE`, so they no longer clear `\Recent`
+- `export` without `--force` skips an existing file only when it holds the same message (identical bytes or Message-ID); an existing file holding a different message, such as after a mailbox was recreated, is left unchanged and reported as an error once the other messages are exported
+- `delete` and `move` require server support for `MOVE` or `UIDPLUS` and fail before changing anything otherwise
+- Non-ASCII search terms are sent as UTF-8 literals and require `LITERAL+`; without it the search fails instead of silently matching nothing
+- `search --json` returns full From, Subject, and Date values; only the terminal table truncates them
+- `status` and `quota` use the IMAP library's typed response parsers and report every quota resource
+- Received attachment bytes no longer include the line break that belongs to the MIME boundary
+
+### Fixed
+
+- The COPY fallback for servers without `MOVE` expunges only the moved UIDs instead of every message flagged `\Deleted` in the folder
+- Actions on searched UIDs (`delete`, `move`, `mark`, `export`, `read`) fail if the folder's `UIDVALIDITY` changed since the search
+- Folder lookup compares names exactly instead of using the folder name as a LIST pattern, so names with spaces, quotes, backslashes, `*`, or `%` work; folder names with control characters are rejected instead of silently altered
+- `--all-folders` skips the special-use `\All` mailbox and no longer skips folders merely containing "all mail" (such as "Small mail")
+- `status` shows `?` instead of zero counts for malformed responses, and folder names with parentheses no longer confuse the counts
+- Message bodies combine every `multipart/mixed` text segment in order, choose one `multipart/alternative` representation, and follow the `multipart/related` root, in `read`, `read --json`, and reply quotes
+- Replies keep In-Reply-To and References when the source Message-ID or References headers contain comments; header values may contain tabs
+- `attachments --save --part` decodes only the selected parts, so a corrupt unselected attachment no longer blocks saving
+- Unsolicited FETCH responses (flag changes by other clients during a search) no longer add unrelated messages to `delete`, `move`, `mark`, or `export`, and no longer blank out a matched message's headers
+- `delete`, `move`, and `mark` act on and count only messages that still exist; receipts report messages another client removed, and failures report the messages already moved or updated, including messages that received only some of several requested flag changes
+- Saving attachments stops instead of overwriting an earlier part when two planned names resolve to the same file on case- or normalization-insensitive filesystems; truncated names no longer end in a space or dot
+
+### Security
+
+- Headers, bodies, folder names, file paths, and server or parser errors are rendered inert in the terminal, including the final error message; `--json` output and exported bytes are unchanged
+- Exported messages use exclusive creation, never follow symlinks, refuse to replace directories or special files, detect destinations that alias another message, and are created owner-only (`0600`) on Unix, like saved attachments
+- Deeply nested MIME messages are rejected by mailparse 0.17's recursion limit instead of risking stack exhaustion
+- The destination mailbox of the COPY fallback is now quoted and validated
+- Attachment names such as `COM¹.txt`, `CONIN$`, `CONOUT$`, and `NUL .txt` are treated as Windows device names
+- Invisible formatting characters (zero-width space, soft hyphen, BOM, word joiner, tag characters outside emoji flags) are shown as spaces in terminal fields and dropped from bodies, so look-alike folder and sender names stay distinguishable
+
 ## [0.7.0] - 2026-09-10
 
 ### Added
@@ -131,7 +180,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
-[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/mwmdev/slashmail/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mwmdev/slashmail/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/mwmdev/slashmail/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/mwmdev/slashmail/compare/v0.4.0...v0.5.0

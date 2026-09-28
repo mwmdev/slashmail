@@ -15,6 +15,7 @@ use mailparse::MailHeaderMap;
 
 use slashmail::connection::{self, ImapSession};
 use slashmail::delete;
+use slashmail::draft::{AppendAttempt, DraftMailboxSession};
 use slashmail::export;
 use slashmail::read;
 use slashmail::search::{self, SearchCriteria};
@@ -146,6 +147,7 @@ fn default_criteria(folder: &str) -> SearchCriteria {
     SearchCriteria {
         folder: folder.to_string(),
         all_folders: false,
+        uid: None,
         subject: None,
         from: None,
         to: None,
@@ -1264,27 +1266,28 @@ fn count_via_uid_search() {
 #[test]
 fn status_command() {
     let user = unique_user();
+    send_email(&user, "Status one", "body");
+    send_email(&user, "Status two", "body");
+    sleep_for_delivery();
     let mut session = imap_connect(&user);
+    // GreenMail does not escape quotes or backslashes in LIST responses;
+    // tests/scripted_cli.rs covers those names.
+    let special = "Projects (2024)";
+    session.create(special).unwrap();
 
-    let folders = session.list(Some(""), Some("*")).unwrap();
-    let names: Vec<String> = folders.iter().map(|f| f.name().to_string()).collect();
+    let names: Vec<String> = session
+        .list_all()
+        .unwrap()
+        .into_iter()
+        .map(|mailbox| mailbox.name)
+        .collect();
+    assert!(names.contains(&"INBOX".to_string()), "{names:?}");
+    assert!(names.contains(&special.to_string()), "{names:?}");
 
-    assert!(
-        names.contains(&"INBOX".to_string()),
-        "INBOX should be listed"
-    );
-
-    // Run a STATUS command on INBOX
-    let cmd = format!(
-        "STATUS {} (MESSAGES UNSEEN RECENT)",
-        search::imap_quote("INBOX")
-    );
-    let response = session.run_command_and_read_response(&cmd).unwrap();
-    let text = String::from_utf8_lossy(&response);
-    assert!(
-        text.contains("STATUS") || text.contains("MESSAGES"),
-        "STATUS response should be parseable"
-    );
+    let inbox = session.status_counts("INBOX").unwrap();
+    assert_eq!(inbox.messages, Some(2));
+    assert_eq!(inbox.unseen, Some(2));
+    assert_eq!(session.status_counts(special).unwrap().messages, Some(0));
 
     session.logout().unwrap();
 }
@@ -2324,5 +2327,450 @@ fn cli_sanitizes_received_attachment_paths_without_mutating_source() {
     assert!(!flags_after
         .iter()
         .any(|flag| flag.eq_ignore_ascii_case("\\Seen")));
+    session.logout().unwrap();
+}
+
+fn uid_with_subject(session: &mut ImapSession, subject: &str) -> u32 {
+    let mut criteria = default_criteria("INBOX");
+    criteria.subject = Some(subject.to_string());
+    let messages = search::search(session, &criteria).unwrap();
+    assert_eq!(messages.len(), 1, "expected one message titled {subject}");
+    messages[0].uid
+}
+
+fn personal_cmd(owner: &str, dir: &Path) -> Command {
+    let config = dir.join("config.toml");
+    let accounts = [("personal", owner)];
+    write_multi_account_config(&config, &accounts);
+    let mut command = slashmail_cmd(&config, &accounts);
+    command.args(["--account", "personal"]);
+    command
+}
+
+#[test]
+fn cli_search_json_reports_thread_ids_and_flags() {
+    let owner = unique_user();
+    let root_id = format!("<root-{owner}@example.com>");
+    let follow_id = format!("<follow-{owner}@example.com>");
+    let origin_id = format!("<origin-{owner}@example.com>");
+    let message = |subject: &str, id: &str| {
+        Message::builder()
+            .from("alice@localhost".parse().unwrap())
+            .to(user_email(&owner).parse().unwrap())
+            .subject(subject)
+            .message_id(Some(id.to_string()))
+            .header(ContentType::TEXT_PLAIN)
+    };
+    send_test_message(
+        &message("Root topic", &root_id)
+            .body("root".to_string())
+            .unwrap(),
+    );
+    send_test_message(
+        &message("Follow-up note", &follow_id)
+            .in_reply_to(root_id.clone())
+            .references(format!("{origin_id} {root_id}"))
+            .body("follow".to_string())
+            .unwrap(),
+    );
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&owner);
+    let root_uid = uid_with_subject(&mut session, "Root topic");
+    let follow_uid = uid_with_subject(&mut session, "Follow-up note");
+    session.select("INBOX").unwrap();
+    session
+        .uid_store(&root_uid.to_string(), "+FLAGS (\\Seen \\Answered)")
+        .unwrap();
+    session
+        .uid_store(&follow_uid.to_string(), "+FLAGS (\\Flagged)")
+        .unwrap();
+    session.logout().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut command = personal_cmd(&owner, tmp.path());
+    command.args(["search", "--json"]);
+    let rows: serde_json::Value =
+        serde_json::from_str(&assert_cmd_success(command.output().unwrap())).unwrap();
+    let row = |uid: u32| {
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["uid"] == uid)
+            .unwrap()
+            .clone()
+    };
+
+    let root = row(root_uid);
+    assert_eq!(root["message_id"], root_id.as_str());
+    assert_eq!(root["in_reply_to"], serde_json::json!([]));
+    assert_eq!(root["references"], serde_json::json!([]));
+    assert_eq!(
+        (&root["seen"], &root["answered"], &root["flagged"]),
+        (&true.into(), &true.into(), &false.into())
+    );
+
+    let follow = row(follow_uid);
+    assert_eq!(follow["message_id"], follow_id.as_str());
+    assert_eq!(follow["in_reply_to"], serde_json::json!([root_id]));
+    assert_eq!(
+        follow["references"],
+        serde_json::json!([origin_id, root_id])
+    );
+    assert_eq!(
+        (&follow["seen"], &follow["answered"], &follow["flagged"]),
+        (&false.into(), &false.into(), &true.into())
+    );
+}
+
+#[test]
+fn cli_read_uid_json_returns_exact_message_without_marking_seen() {
+    let owner = unique_user();
+    send_email_with_attachments(
+        &owner,
+        "Same subject",
+        "evidence body",
+        &[("screenshot.png", b"\x89PNG-bytes")],
+    );
+    send_email(&owner, "Same subject", "other body");
+    sleep_for_delivery();
+
+    let mut session = imap_connect(&owner);
+    let messages = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    assert_eq!(messages.len(), 2);
+    let uid = messages.iter().map(|message| message.uid).min().unwrap();
+    let missing_uid = messages.iter().map(|message| message.uid).max().unwrap() + 100;
+    session.logout().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut command = personal_cmd(&owner, tmp.path());
+    command.args([
+        "read",
+        "--folder",
+        "INBOX",
+        "--json",
+        "--uid",
+        &uid.to_string(),
+    ]);
+    let json: serde_json::Value =
+        serde_json::from_str(&assert_cmd_success(command.output().unwrap())).unwrap();
+    let read = json.as_array().unwrap();
+    assert_eq!(read.len(), 1);
+    assert_eq!(read[0]["uid"], uid);
+    assert_eq!(read[0]["folder"], "INBOX");
+    assert_eq!(read[0]["seen"], false);
+    assert!(read[0]["body"].as_str().unwrap().contains("evidence body"));
+    assert_eq!(read[0]["attachments"][0]["filename"], "screenshot.png");
+    assert_eq!(read[0]["attachments"][0]["size"], 10);
+
+    let mut command = personal_cmd(&owner, tmp.path());
+    command.args(["read", "--uid", &uid.to_string()]);
+    let text = assert_cmd_success(command.output().unwrap());
+    assert!(text.contains("evidence body"));
+    assert!(!text.contains("other body"));
+
+    let mut command = personal_cmd(&owner, tmp.path());
+    command.args(["read", "--json", "--uid", &missing_uid.to_string()]);
+    let output = command.output().unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains(&format!("No message with UID {missing_uid}")));
+
+    let mut session = imap_connect(&owner);
+    session.select("INBOX").unwrap();
+    let fetches = session.uid_fetch(&uid.to_string(), "FLAGS").unwrap();
+    assert!(!fetches
+        .get(0)
+        .unwrap()
+        .flags()
+        .contains(&imap::types::Flag::Seen));
+    session.logout().unwrap();
+}
+
+#[test]
+fn cli_draft_and_reply_json_receipts_identify_the_saved_drafts() {
+    let owner = unique_user();
+    send_email(&owner, "Please advise", "question");
+    sleep_for_delivery();
+    create_drafts_folder(&owner);
+    let mut session = imap_connect(&owner);
+    let source_uid = uid_with_subject(&mut session, "Please advise");
+    session.logout().unwrap();
+
+    let tmp = tempfile::tempdir().unwrap();
+    let mut command = personal_cmd(&owner, tmp.path());
+    command.args([
+        "draft",
+        "--json",
+        "--to",
+        "friend@example.com",
+        "--subject",
+        "Fresh draft",
+        "--drafts-folder",
+        "Drafts",
+    ]);
+    let draft: serde_json::Value =
+        serde_json::from_str(&assert_cmd_success(output_with_stdin(command, "hello"))).unwrap();
+
+    let mut command = personal_cmd(&owner, tmp.path());
+    command.args([
+        "reply",
+        "--json",
+        "--drafts-folder",
+        "Drafts",
+        &source_uid.to_string(),
+    ]);
+    let reply: serde_json::Value =
+        serde_json::from_str(&assert_cmd_success(output_with_stdin(command, "answer"))).unwrap();
+
+    assert_eq!(draft["account"], "personal");
+    assert_eq!(draft["folder"], "Drafts");
+    assert_eq!(draft["to"], serde_json::json!(["friend@example.com"]));
+    assert_eq!(draft["subject"], "Fresh draft");
+    assert_eq!(reply["subject"], "Re: Please advise");
+    assert_eq!(reply["to"], serde_json::json!(["sender@localhost"]));
+
+    let mut session = imap_connect(&owner);
+    session.select("Drafts").unwrap();
+    for receipt in [&draft, &reply] {
+        let uid = receipt["uid"].as_u64().unwrap();
+        let fetches = session
+            .uid_fetch(&uid.to_string(), "BODY.PEEK[HEADER.FIELDS (Message-ID)]")
+            .unwrap();
+        let (headers, _) =
+            mailparse::parse_headers(fetches.get(0).unwrap().header().unwrap()).unwrap();
+        assert_eq!(
+            headers.get_first_value("Message-ID").as_deref(),
+            receipt["message_id"].as_str()
+        );
+    }
+    session.logout().unwrap();
+}
+
+fn subjects_in(session: &mut ImapSession, folder: &str) -> Vec<String> {
+    let mut subjects: Vec<String> = search::search(session, &default_criteria(folder))
+        .unwrap()
+        .into_iter()
+        .map(|message| message.subject)
+        .collect();
+    subjects.sort();
+    subjects
+}
+
+fn append_raw(session: &mut ImapSession, folder: &str, raw: &[u8]) {
+    assert!(matches!(
+        session.append_draft(folder, raw),
+        AppendAttempt::Saved { .. }
+    ));
+}
+
+#[test]
+fn cli_move_selects_by_recipient_filter_and_moves_to_dest() {
+    let owner = unique_user();
+    let other = unique_user();
+    send_email(&owner, "Addressed to owner", "body");
+    send_email_with_cc(
+        "sender@localhost",
+        &other,
+        &owner,
+        "Addressed to other",
+        "body",
+    );
+    sleep_for_delivery();
+    let mut session = imap_connect(&owner);
+    session.create("Archive").unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let other_address = user_email(&other);
+    let move_args = ["move", "--to", other_address.as_str(), "--dest", "Archive"];
+
+    let dry_run = assert_cmd_success(
+        personal_cmd(&owner, dir.path())
+            .args(move_args)
+            .arg("--dry-run")
+            .output()
+            .unwrap(),
+    );
+    assert!(
+        dry_run.contains("1 message(s) would be moved to Archive"),
+        "{dry_run}"
+    );
+    assert_eq!(
+        subjects_in(&mut session, "INBOX"),
+        ["Addressed to other", "Addressed to owner"]
+    );
+    assert!(subjects_in(&mut session, "Archive").is_empty());
+
+    let moved = assert_cmd_success(
+        personal_cmd(&owner, dir.path())
+            .args(move_args)
+            .arg("--yes")
+            .output()
+            .unwrap(),
+    );
+    assert!(moved.contains("Moved 1 message(s) to Archive"), "{moved}");
+    assert_eq!(subjects_in(&mut session, "INBOX"), ["Addressed to owner"]);
+    assert_eq!(subjects_in(&mut session, "Archive"), ["Addressed to other"]);
+    session.logout().unwrap();
+}
+
+#[test]
+fn cli_terminal_output_is_inert_while_json_and_export_keep_original_data() {
+    let owner = unique_user();
+    let long_name = "Mallory Example With A Deliberately Long Display Name";
+    let subject_tail = "quarterly results for the whole organisation and more";
+    let raw = format!(
+        "From: \"{long_name}\x1b]52;c;cHduZWQ=\x07\" <evil@localhost>\r\n\
+         To: {owner}@localhost\r\n\
+         Subject: Inert \x1b[2J\x1b]0;pwned\x07{subject_tail}\r\n\
+         Date: Mon, 1 Apr 2026 10:00:00 +0200\r\n\
+         Message-ID: <inert-{owner}@example.com>\r\n\
+         Content-Type: text/plain; charset=utf-8\r\n\r\n\
+         Line one\ttabbed \u{fc}n\u{ef}code\r\n\
+         \x1b]8;;http://evil.example\x1b\\click here\x1b]8;;\x1b\\\x1b[31m\r\n\
+         Line three\x1bP+q\x1b\\\r\n"
+    )
+    .into_bytes();
+    let mut session = imap_connect(&owner);
+    append_raw(&mut session, "INBOX", &raw);
+    let dir = tempfile::tempdir().unwrap();
+    let is_inert = |text: &str| {
+        !text
+            .chars()
+            .any(|c| matches!(c, '\u{1b}' | '\u{7}' | '\u{9b}' | '\u{9d}'))
+    };
+
+    let search = personal_cmd(&owner, dir.path())
+        .args(["search", "--subject", "Inert"])
+        .output()
+        .unwrap();
+    let table = assert_cmd_success(search);
+    assert!(is_inert(&table), "{table:?}");
+    assert!(table.contains("Inert"), "{table}");
+
+    let json = assert_cmd_success(
+        personal_cmd(&owner, dir.path())
+            .args(["search", "--subject", "Inert", "--json"])
+            .output()
+            .unwrap(),
+    );
+    let rows: serde_json::Value = serde_json::from_str(&json).unwrap();
+    let subject = rows[0]["subject"].as_str().unwrap();
+    assert!(
+        subject.ends_with(subject_tail) && subject.chars().count() > 60,
+        "{subject:?}"
+    );
+    assert!(
+        subject.contains('\u{1b}'),
+        "JSON must keep the decoded original"
+    );
+    let from = rows[0]["from"].as_str().unwrap();
+    assert!(
+        from.contains(long_name) && from.chars().count() > 40,
+        "{from:?}"
+    );
+    assert_eq!(rows[0]["date"], "Mon, 1 Apr 2026 10:00:00 +0200");
+
+    let read = assert_cmd_success(
+        personal_cmd(&owner, dir.path())
+            .args(["read", "--subject", "Inert"])
+            .output()
+            .unwrap(),
+    );
+    assert!(is_inert(&read), "{read:?}");
+    assert!(
+        read.contains("Line one\ttabbed \u{fc}n\u{ef}code\nclick here\nLine three"),
+        "{read:?}"
+    );
+
+    let dry_run = personal_cmd(&owner, dir.path())
+        .args(["delete", "--subject", "Inert", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(is_inert(&String::from_utf8_lossy(&dry_run.stderr)));
+    assert!(is_inert(&assert_cmd_success(dry_run)));
+
+    let out = dir.path().join("out");
+    let export = personal_cmd(&owner, dir.path())
+        .args(["export", "--subject", "Inert", "--yes", "-o"])
+        .arg(&out)
+        .output()
+        .unwrap();
+    assert_cmd_success(export);
+    let exported: Vec<_> = std::fs::read_dir(&out).unwrap().collect();
+    assert_eq!(exported.len(), 1);
+    let path = exported[0].as_ref().unwrap().path();
+    assert_eq!(std::fs::read(path).unwrap(), raw);
+    session.logout().unwrap();
+}
+
+#[test]
+fn cli_export_keeps_collision_prone_folders_distinct_and_private() {
+    let owner = unique_user();
+    let mut session = imap_connect(&owner);
+    let mut expected = Vec::new();
+    for folder in ["Work/Projects", "Work_Projects"] {
+        // Exact spellings are unit-tested per platform in src/export.rs.
+        let file = format!("{}_1.eml", export::encode_folder_name(folder));
+        session.create(folder).unwrap();
+        let raw = format!(
+            "From: a@localhost\r\nSubject: Export from {folder}\r\n\
+             Date: Mon, 1 Apr 2026 10:00:00 +0000\r\n\r\nBody for {folder}\r\n"
+        )
+        .into_bytes();
+        append_raw(&mut session, folder, &raw);
+        session.select(folder).unwrap();
+        assert_eq!(
+            session
+                .uid_search("ALL")
+                .unwrap()
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [1],
+            "{folder} must reuse UID 1"
+        );
+        expected.push((file, raw));
+    }
+    let dir = tempfile::tempdir().unwrap();
+    let out = dir.path().join("out");
+    let export = |force: bool| {
+        let mut command = personal_cmd(&owner, dir.path());
+        command
+            .args([
+                "export",
+                "--all-folders",
+                "--subject",
+                "Export from",
+                "--yes",
+                "-o",
+            ])
+            .arg(&out);
+        if force {
+            command.arg("--force");
+        }
+        assert_cmd_success(command.output().unwrap())
+    };
+
+    let first = export(false);
+    assert!(first.contains("Exported 2 message(s)"), "{first}");
+    for (file, raw) in &expected {
+        let path = out.join(file);
+        assert_eq!(&std::fs::read(&path).unwrap(), raw, "{file}");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "{file} mode {mode:o}");
+        }
+    }
+
+    let second = export(false);
+    assert!(
+        second.contains("Exported 0 message(s)") && second.contains("2 skipped"),
+        "{second}"
+    );
+    let forced = export(true);
+    assert!(forced.contains("Exported 2 message(s)"), "{forced}");
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 2);
     session.logout().unwrap();
 }
