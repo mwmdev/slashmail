@@ -626,7 +626,7 @@ a:focus-visible {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  margin: 18px 0 0;
+  margin: 18px 0 0 auto;
   padding: 12px 14px;
   color: var(--muted);
   background: var(--violet-soft);
@@ -982,6 +982,34 @@ a:focus-visible {
   color: var(--muted);
   font-size: 0.88rem;
   line-height: 1.55;
+}
+
+.config-paths {
+  margin: 14px 0 0;
+  font-size: 0.78rem;
+}
+
+.config-paths div {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.config-paths div:last-child {
+  border-bottom: 0;
+}
+
+.config-paths dt {
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.config-paths dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: "IBM Plex Mono", monospace;
 }
 
 .setup-step a {

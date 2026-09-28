@@ -210,12 +210,16 @@
           <pre class="copy-block"><code>host = "imap.gmail.com"
 tls = true
 user = "you@gmail.com"</code></pre>
-          <p>Save it as <span class="inline-code">~/.config/slashmail/config.toml</span>, or in <span class="inline-code">~/Library/Application Support/slashmail/</span> on macOS and <span class="inline-code">%APPDATA%\slashmail\</span> on Windows. Proton Mail Bridge needs only <span class="inline-code">user</span>.</p>
+          <dl class="config-paths">
+            <div><dt>Linux</dt><dd>~/.config/slashmail/config.toml</dd></div>
+            <div><dt>Mac</dt><dd>~/Library/Application Support/slashmail/config.toml</dd></div>
+            <div><dt>Win</dt><dd>%APPDATA%\slashmail\config.toml</dd></div>
+          </dl>
         </li>
         <li class="setup-step">
           <h3>Check the connection</h3>
           <pre class="copy-block"><code>slashmail status</code></pre>
-          <p>Enter your password when asked, or set <span class="inline-code">SLASHMAIL_PASS</span>. Gmail needs an app password.</p>
+          <p>Enter your password when asked, or set <span class="inline-code">SLASHMAIL_PASS</span>.</p>
         </li>
       </ol>
     </section>
