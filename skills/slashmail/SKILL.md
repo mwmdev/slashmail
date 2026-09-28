@@ -19,7 +19,9 @@ SLASHMAIL_PERSONAL_PASS=your-password
 
 For `draft` and `reply`, credentials must be noninteractive because stdin is exclusively the new message body. A direct/legacy account requires a nonempty `SLASHMAIL_PASS`. A named account must configure `pass_env`, and that variable must be nonempty in the process environment or adjacent `.env`. Slashmail resolves credentials before reading stdin and never prompts for these commands.
 
-Optional `sender` and `drafts_folder` values can be set at the top level or per named account. The account value wins, then the top-level value. If no `sender` is configured, slashmail uses `user` only when it is a valid email mailbox. Draft destination precedence is `--drafts-folder`, resolved account configuration, then exactly one selectable server mailbox marked `\Drafts`.
+Optional `sender` and `drafts_folder` values can be set at the top level or per named account. The account value wins, then the top-level value. If no `sender` is configured, slashmail uses `user` only when it is a valid email mailbox. Draft destination precedence is `--drafts-folder`, resolved account configuration, then exactly one selectable server mailbox marked `\Drafts`. `trash_folder` (default `Trash`, used by `delete`) and `default_folder` (default `INBOX`) can be set the same way.
+
+**Connection options** (global, before or after the subcommand): `--host HOST` (default `127.0.0.1`), `--port PORT` (default 1143 plain, 993 with TLS), `--tls`, `-u/--user USER` (or `SLASHMAIL_USER`), and `--config PATH`. Plaintext IMAP is refused for every non-loopback host, so pass `--tls` (or set `tls = true`) for any remote server; only loopback servers such as ProtonMail Bridge may use plain TCP.
 
 ## Filter Options (search and mailbox-operation commands)
 
@@ -135,6 +137,8 @@ With `--json`, the receipt is one object with `account`, `folder`, `uid`, `messa
 - In `search --json`, `from`, `subject`, and `date` are full values. Match duplicates and follow-ups by `message_id`, `in_reply_to`, and `references` (angle-bracketed IDs), and use `answered` to skip mail already replied to.
 - Never pass an empty text filter (for example an unset variable as `--from`); slashmail rejects it rather than matching every message.
 - If `export` reports existing files that hold a different message, do not add `--force` without the user's approval; suggest a new output directory instead.
+- If an action on searched messages fails because the folder's UIDVALIDITY changed, the mailbox was rebuilt since the search: run the search again and act on the new UIDs. Never reuse the old ones.
+- `delete` and `move` require server support for `MOVE` or `UIDPLUS` and fail before changing anything otherwise. Non-ASCII search terms require `LITERAL+`; without it the search fails rather than matching nothing. Report these failures instead of working around them.
 
 ## Received Attachment Rules
 
