@@ -25,8 +25,8 @@ Optional `sender` and `drafts_folder` values can be set at the top level or per 
 
 | Flag | Description |
 |------|-------------|
-| `-f, --folder FOLDER` | Target folder (default: INBOX) |
-| `--all-folders` | Search all folders (excludes Trash, Spam) |
+| `-f, --folder FOLDER` | Target folder (default: INBOX); cannot be combined with `--all-folders` |
+| `--all-folders` | Search all folders (excludes Trash, Junk/Spam, All Mail, and the move/delete destination) |
 | `--subject TEXT` | Filter by subject |
 | `--from TEXT` | Filter by sender |
 | `--to TEXT` | Filter by recipient |
@@ -56,7 +56,7 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 | `read` | Display message content without marking it seen | `--uid UID` (exact message in `--folder`; single account), `--json` |
 | `count` | Fast count without fetching content | `--json` |
 | `delete` | Move to Trash | `--trash-folder NAME`, `--dry-run`, `--yes` |
-| `move` | Move to folder | `--to DEST`, `--dry-run`, `--yes` |
+| `move` | Move to folder | `--dest FOLDER` (required; `--to` filters by recipient), `--dry-run`, `--yes` |
 | `mark` | Set/unset flags | `--read/--unread`, `--set-flagged/--clear-flagged`, `--dry-run`, `--yes` |
 | `export` | Save as `.eml` files | `-o DIR`, `--force`, `--yes` |
 | `status` | Per-folder message stats | — |
@@ -132,7 +132,9 @@ With `--json`, the receipt is one object with `account`, `folder`, `uid`, `messa
 
 - Once `search` has identified a message, use `read --folder FOLDER --uid UID` rather than re-filtering by sender, subject, or date. It fails if the UID no longer exists in that folder, and it rejects `--all-folders` and `--all-accounts`.
 - `read --json` returns an array of objects with full `from`/`to`/`cc`/`date`/`subject`, `message_id`, `in_reply_to`, `references`, flags, decoded `body`, and `attachments` (`part`, `filename`, `content_type`, `size`). Pass a `part` to `attachments --save --part`.
-- In `search --json`, `from` and `subject` are shortened for display; match duplicates and follow-ups by `message_id`, `in_reply_to`, and `references` (angle-bracketed IDs), and use `answered` to skip mail already replied to.
+- In `search --json`, `from`, `subject`, and `date` are full values. Match duplicates and follow-ups by `message_id`, `in_reply_to`, and `references` (angle-bracketed IDs), and use `answered` to skip mail already replied to.
+- Never pass an empty text filter (for example an unset variable as `--from`); slashmail rejects it rather than matching every message.
+- If `export` reports existing files that hold a different message, do not add `--force` without the user's approval; suggest a new output directory instead.
 
 ## Received Attachment Rules
 

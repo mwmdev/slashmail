@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/mwmdev/slashmail/actions/workflows/ci.yml/badge.svg)](https://github.com/mwmdev/slashmail/actions/workflows/ci.yml)
 [![Crates.io](https://img.shields.io/crates/v/slashmail)](https://crates.io/crates/slashmail)
-[![MSRV](https://img.shields.io/badge/MSRV-1.83-blue)](https://www.rust-lang.org)
+[![MSRV](https://img.shields.io/badge/MSRV-1.88-blue)](https://www.rust-lang.org)
 [![Crate Size](https://img.shields.io/crates/size/slashmail)](https://crates.io/crates/slashmail)
 [![License](https://img.shields.io/crates/l/slashmail)](LICENSE-MIT)
 
@@ -70,7 +70,7 @@ Commands:
 ```
 --host <HOST>      IMAP host [default: 127.0.0.1]
 --port <PORT>      IMAP port [default: 1143 plain, 993 TLS]
---tls              Use TLS (required for remote IMAP servers)
+--tls              Use TLS (required for every non-loopback IMAP host)
 -u, --user <USER>  IMAP username (or SLASHMAIL_USER env)
 --account <NAME>   Use a named account from config
 --all-accounts     Query all configured accounts (read-only commands only)
@@ -216,7 +216,9 @@ slashmail attachments --account work --save \
   --part 2.1 --part 3 --output-dir './received files' 1842
 ```
 
-Saving aborts before writing anything if a destination already exists. Add
+Saving aborts before writing anything if a destination already exists, and
+stops rather than overwrite an earlier part when two names resolve to the same
+file (case- or accent-insensitive filesystems). Add
 `--force` to replace existing files. Filenames are sanitized and kept inside
 the output directory. Only parts declared as attachments are exposed;
 inline/CID parts and attachments nested inside another attached message are
@@ -249,8 +251,8 @@ Each `search --json` row contains `uid`, `folder` (set with `--all-folders`),
 `from`, `subject`, `date`, `timestamp`, `size`, the thread identifiers
 `message_id` (or `null`), `in_reply_to`, and `references` (arrays of
 angle-bracketed IDs), and the `seen`, `answered`, and `flagged` booleans.
-Rows include `account` when a named account is used. `from` and `subject` are
-shortened for display; use `read --json` for the full headers.
+Rows include `account` when a named account is used. `from`, `subject`, and
+`date` are the full decoded values; only the terminal table shortens them.
 
 ```bash
 # Messages you have not answered yet
@@ -264,7 +266,7 @@ Search, read, count, and bulk message commands share these filter options:
 
 ```
 -f, --folder <FOLDER>    Folder to search [default: INBOX]
-    --all-folders        Search across all folders (excludes Trash, Spam)
+    --all-folders        Search across all folders (excludes Trash, Junk/Spam, All Mail)
     --subject <TEXT>     Subject contains
     --from <TEXT>        From address contains
     --to <TEXT>          To address contains
@@ -284,7 +286,9 @@ Search, read, count, and bulk message commands share these filter options:
 -n, --limit <N>          Limit number of results
 ```
 
-All filter criteria are AND'd together. Omitting all criteria matches all messages.
+All filter criteria are AND'd together. Omitting all criteria matches all messages. Text filters (`--subject`, `--from`, `--to`, `--cc`, `--body`, `--text`) must not be empty, so an unset shell variable cannot turn a filter into "match everything". `--folder` and `--all-folders` cannot be combined.
+
+`--all-folders` skips mailboxes the server marks `\All`, `\Trash`, or `\Junk` (for example `Deleted Items` and `Junk Email`), plus folders named `Trash`, `Spam`, `Junk`, or `All Mail` for servers without those markers. `delete` and `move` also never search their destination folder, and naming the destination as the only source folder is an error.
 
 ### Action options
 
@@ -297,9 +301,15 @@ Commands that modify messages (`delete`, `move`, `mark`) support:
 
 `delete` also supports `--trash-folder <NAME>` (default: `Trash`) for servers that use a different name (e.g. `Deleted Items`, `[Gmail]/Trash`).
 
-`export` supports `--yes`, `--force` (overwrite existing files), and `-o, --output-dir`.
+`move` requires `--dest <FOLDER>`; `--to` stays the recipient filter, as in every other command.
+
+`delete` and `move` require the server to advertise `MOVE` or `UIDPLUS`. Without `MOVE`, messages are copied, flagged `\Deleted`, and removed with `UID EXPUNGE` of exactly those UIDs; other messages already flagged `\Deleted` are never expunged. This fallback is not atomic: if a step fails, slashmail stops and reports it without retrying, including how many messages were already moved or updated. Every mutating command and `export`/`read` refuse to act if the folder's `UIDVALIDITY` changed since the search. Immediately before `delete`, `move`, and `mark` act, slashmail asks the server which searched messages still exist; their receipts count only those and report any another client removed in the meantime.
+
+`export` supports `--yes`, `--force` (replace existing files), and `-o, --output-dir`. Files are named `<folder>_<uid>.eml`, where the folder name is percent-encoded: ASCII letters, digits, and `-` are kept and every other byte becomes `%XX` (so on Linux and macOS `Work/Projects` is `Work%2FProjects_1.eml` and `Work_Projects` is `Work%5FProjects_1.eml`). On Windows, lowercase letters are also encoded so folders differing only by case stay distinct (`Work/P` is `W%6F%72%6B%2FP_1.eml`). Without `--force`, an existing file is skipped only when it already holds the same message (identical bytes or the same Message-ID). UIDs restart when a mailbox is recreated or migrated, so an existing file holding a different message is left unchanged and reported as an error after the other messages are exported; use `--force` or a new output directory. `--force` replaces only a regular file or symlink entry and never follows symlinks. New exports and saved attachments are created owner-only (`0600`) on Unix.
 
 `mark` takes one or more actions: `--read`, `--unread`, `--set-flagged`, `--clear-flagged`.
+
+Search terms containing non-ASCII text are sent as UTF-8 literals and require the server to advertise `LITERAL+`; otherwise the search fails before any mailbox is searched.
 
 ## Examples
 
@@ -355,7 +365,7 @@ slashmail delete -u user@example.com --subject "unsubscribe" --yes
 slashmail delete -u user@example.com --from "old-list" --dry-run
 
 # Move messages to a folder
-slashmail move -u user@example.com --from "receipts" --to Archive
+slashmail move -u user@example.com --from "receipts" --dest Archive
 
 # Export messages as .eml files
 slashmail export -u user@example.com --subject "contract" -o ./backup
@@ -449,14 +459,16 @@ Destructive operations always dry-run first and ask for confirmation.
 - With SORT, `--limit` truncates results before fetching (fewer bytes over the wire)
 - `search`, `delete`, `move`, `mark`, `count` only fetch headers and size -- never full messages
 - `export` fetches full message bodies via `BODY.PEEK[]`
-- Uses `BODY.PEEK` to avoid marking messages as read
+- Uses `BODY.PEEK` to avoid marking messages as read, and opens folders read-only (`EXAMINE`) for `search`, `read`, `count`, `export`, and `--dry-run`, so they do not clear the `\Recent` flag
 - UID sets are compressed into ranges and chunked to stay within IMAP command length limits
-- Passwords are securely zeroed from memory after login
+- Message content, headers, folder names, and server errors are rendered inert in the terminal: escape sequences and control characters are removed, and invisible formatting characters (such as zero-width spaces) are shown as spaces in names and dropped from bodies, so look-alike names stay distinguishable. `--json` output and exported `.eml` files keep the original data.
+- The password buffer slashmail reads is zeroed after login. Copies held by the process environment, `.env` loading, or the IMAP library's LOGIN command are not guaranteed to be wiped.
 
 ## Exit codes
 
 - `0` — Success
-- `1` — Error (connection failure, invalid credentials, bad arguments, etc.)
+- `1` — Error (connection failure, invalid credentials, refused operation, etc.)
+- `2` — Invalid command-line usage
 
 All errors print to stderr. Combine `--yes` with cron or scripts for unattended operation.
 
@@ -482,5 +494,5 @@ All errors print to stderr. Combine `--yes` with cron or scripts for unattended 
 
 ### TLS errors
 
-- Use `--tls` for all remote (non-localhost) IMAP servers
+- `--tls` is required for all non-loopback IMAP hosts; plaintext is only allowed for `localhost` and loopback addresses (for example ProtonMail Bridge)
 - If you get certificate errors, ensure your system CA certificates are up to date

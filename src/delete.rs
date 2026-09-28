@@ -3,7 +3,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use std::time::Duration;
 
 use crate::connection::ImapSession;
-use crate::display::display_messages;
+use crate::display::{display_messages, sanitize_terminal_field};
 use crate::search::{self, SearchCriteria};
 
 fn spinner(msg: &str) -> ProgressBar {
@@ -37,7 +37,7 @@ pub fn search_and_move_with_account(
     account_name: Option<&str>,
 ) -> Result<()> {
     let sp = spinner("Searching...");
-    let mut messages = search::search(session, criteria)?;
+    let mut messages = search::search_excluding(session, criteria, Some(dest))?;
     sp.finish_and_clear();
     if let Some(account) = account_name {
         for msg in &mut messages {
@@ -52,22 +52,28 @@ pub fn search_and_move_with_account(
 
     display_messages(&messages);
 
+    let safe_dest = sanitize_terminal_field(dest);
     if dry_run {
         println!(
-            "Dry run: {} message(s) would be moved to {dest}.",
+            "Dry run: {} message(s) would be moved to {safe_dest}.",
             messages.len()
         );
         return Ok(());
     }
 
+    session.ensure_safe_move_supported()?;
     search::ensure_folder_exists(session, dest)?;
+    // Validate every row's mailbox identity before any mutation.
+    let groups = search::group_message_uids(&messages, &criteria.folder)?;
 
     if !yes {
-        let confirm =
-            inquire::Confirm::new(&format!("Move {} message(s) to {dest}?", messages.len()))
-                .with_default(false)
-                .prompt()
-                .context("Prompt failed")?;
+        let confirm = inquire::Confirm::new(&format!(
+            "Move {} message(s) to {safe_dest}?",
+            messages.len()
+        ))
+        .with_default(false)
+        .prompt()
+        .context("Prompt failed")?;
 
         if !confirm {
             println!("Aborted.");
@@ -75,37 +81,48 @@ pub fn search_and_move_with_account(
         }
     }
 
-    let sp = spinner(&format!("Moving to {dest}..."));
-
-    // Group by folder for multi-folder moves
-    let mut by_folder: std::collections::HashMap<String, Vec<u32>> =
-        std::collections::HashMap::new();
-    for msg in &messages {
-        let folder = msg
-            .folder
-            .clone()
-            .unwrap_or_else(|| criteria.folder.clone());
-        by_folder.entry(folder).or_default().push(msg.uid);
-    }
+    let sp = spinner(&format!("Moving to {safe_dest}..."));
 
     let mut total = 0usize;
-    for (folder, uids) in &by_folder {
-        session
-            .select(folder)
-            .with_context(|| format!("Failed to select '{folder}'"))?;
-
-        for chunk in &search::build_uid_set(uids) {
-            session
-                .uid_move_or_fallback(chunk, dest)
-                .with_context(|| format!("Failed to move messages from '{folder}' to {dest}"))?;
+    let mut move_groups = || -> Result<()> {
+        for (folder, (uid_validity, uids)) in &groups {
+            let failed = |total: usize| {
+                format!(
+                    "Failed to move messages from '{}' to '{safe_dest}' ({total} already moved)",
+                    sanitize_terminal_field(folder)
+                )
+            };
+            search::select_verified(session, folder, *uid_validity)
+                .with_context(|| failed(total))?;
+            for chunk in &search::build_uid_set(uids) {
+                let present =
+                    search::existing_uids(session, chunk).with_context(|| failed(total))?;
+                for set in &search::build_uid_set(&present) {
+                    session
+                        .uid_move_or_fallback(set, dest)
+                        .with_context(|| failed(total))?;
+                    total += search::uid_set_len(set);
+                }
+            }
         }
-
-        total += uids.len();
-    }
-
+        Ok(())
+    };
+    let result = move_groups();
     sp.finish_and_clear();
-    println!("Moved {total} message(s) to {dest}.");
+    result?;
+
+    println!("Moved {total} message(s) to {safe_dest}.");
+    report_vanished(messages.len(), total);
     Ok(())
+}
+
+/// Report searched messages that another client removed before the action,
+/// so receipts count only messages the server still had.
+pub fn report_vanished(searched: usize, acted: usize) {
+    let vanished = searched.saturating_sub(acted);
+    if vanished > 0 {
+        println!("{vanished} message(s) no longer existed and were skipped.");
+    }
 }
 
 pub fn delete(
