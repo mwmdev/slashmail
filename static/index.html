@@ -28,7 +28,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wdth,wght@75..100,400..800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=0.8.0-2">
+  <link rel="stylesheet" href="styles.css?v=0.8.0-3">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -52,7 +52,7 @@
       <div class="hero-copy">
         <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> IMAP for you and your agent</p>
         <h1 id="hero-title">Your inbox has a command line.</h1>
-        <p class="hero-intro">Search, read, draft, and clean up email without leaving the terminal. One lightweight CLI your agent can use, with no way to send: replies wait in Drafts for you.</p>
+        <p class="hero-intro">Search, read, draft, and clean up email without leaving the terminal. One lightweight CLI your agent can use.</p>
 
         <div class="install-row" aria-label="Installation command">
           <code>cargo install slashmail</code>
@@ -561,6 +561,10 @@ Updated 2 message(s).</pre>
 
   </main>
 
+  <a class="to-top" href="#" aria-label="Back to top">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </a>
+
 
   <script>
     const copyButton = document.querySelector('.copy-button');
@@ -619,6 +623,11 @@ Updated 2 message(s).</pre>
       });
     });
 
+
+    const toTop = document.querySelector('.to-top');
+    const toggleToTop = () => toTop.classList.toggle('is-visible', window.scrollY > 900);
+    window.addEventListener('scroll', toggleToTop, { passive: true });
+    toggleToTop();
 
     const galleryTabs = [...document.querySelectorAll('.ga-tab')];
     const galleryCopy = document.querySelector('.ga-copy');

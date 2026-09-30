@@ -1660,3 +1660,37 @@ a:focus-visible {
     transition-duration: 0.01ms !important;
   }
 }
+
+.to-top {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 20;
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: var(--paper);
+  background: var(--ink);
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgb(20 21 27 / 22%);
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(8px);
+  transition: opacity 180ms ease, transform 180ms ease, background 160ms ease;
+}
+
+.to-top.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+  transform: none;
+}
+
+.to-top:hover {
+  background: var(--violet);
+}
+
+.to-top svg {
+  width: 20px;
+  height: 20px;
+}
