@@ -26,7 +26,7 @@
   <link rel="canonical" href="https://www.slashmail.io/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=0.8.0-5">
+  <link rel="stylesheet" href="styles.css?v=0.8.0-7">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -41,7 +41,7 @@
       <a class="nav-secondary" href="#agents">Agent skill</a>
       <a class="nav-secondary" href="#commands">Commands</a>
       <a class="nav-secondary" href="#privacy">Privacy</a>
-      <a href="#releases">Releases</a>
+      <a class="cta-button cta-button-sm" href="#releases">Download</a>
       <a href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
   </header>
@@ -61,8 +61,8 @@
         </div>
 
         <div class="hero-links">
-          <a class="primary-link" href="https://github.com/mwmdev/slashmail#slashmail" target="_blank" rel="noreferrer">Read the docs</a>
-          <a class="secondary-link" href="#releases">Download a binary</a>
+          <a class="cta-button" href="#releases">Download <span aria-hidden="true">↓</span></a>
+          <a class="secondary-link" href="https://github.com/mwmdev/slashmail#slashmail" target="_blank" rel="noreferrer">Read the docs</a>
         </div>
       </div>
 
@@ -391,7 +391,10 @@ Updated 2 message(s).</pre>
           <li>Reads without marking messages as read</li>
           <li>Acts only on the exact messages it listed</li>
         </ul>
-        <a class="primary-link" href="https://github.com/mwmdev/slashmail/tree/main/skills/slashmail" target="_blank" rel="noreferrer">View the agent skill <span aria-hidden="true">→</span></a>
+        <div class="hero-links">
+          <a class="cta-button" href="#releases">Download slashmail <span aria-hidden="true">↓</span></a>
+          <a class="primary-link" href="https://github.com/mwmdev/slashmail/tree/main/skills/slashmail" target="_blank" rel="noreferrer">View the agent skill <span aria-hidden="true">→</span></a>
+        </div>
       </div>
 
       <div class="agent-demo" aria-label="Example agent workflow">
@@ -436,6 +439,7 @@ Updated 2 message(s).</pre>
         <p class="section-label">The complete command set</p>
         <h2 id="commands-title">Your inbox toolbox</h2>
         <p>Focused commands that compose cleanly in your terminal, scripts, and agent workflows.</p>
+        <a class="cta-button" href="#releases">Download slashmail <span aria-hidden="true">↓</span></a>
       </div>
       <div class="command-list">
         <article>
@@ -497,6 +501,7 @@ Updated 2 message(s).</pre>
       <div class="commands-heading">
         <p class="section-label">Privacy</p>
         <h2 id="privacy-title">Your mail, your machine.</h2>
+        <a class="cta-button" href="#releases">Download slashmail <span aria-hidden="true">↓</span></a>
       </div>
       <div class="command-list">
         <article>
@@ -668,6 +673,16 @@ Updated 2 message(s).</pre>
     const toggleToTop = () => toTop.classList.toggle('is-visible', window.scrollY > 900);
     window.addEventListener('scroll', toggleToTop, { passive: true });
     toggleToTop();
+
+    const navLinks = new Map([...document.querySelectorAll('nav a[href^="#"]')].map((link) => [link.hash.slice(1), link]));
+    const sectionSpy = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        navLinks.forEach((link) => link.removeAttribute('aria-current'));
+        navLinks.get(entry.target.id)?.setAttribute('aria-current', 'location');
+      });
+    }, { rootMargin: '-40% 0px -55% 0px' });
+    document.querySelectorAll('main > section').forEach((section) => sectionSpy.observe(section));
 
     const galleryTabs = [...document.querySelectorAll('.ga-tab')];
     const galleryCopy = document.querySelector('.ga-copy');

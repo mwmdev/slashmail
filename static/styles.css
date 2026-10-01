@@ -63,6 +63,7 @@
 
 html {
   scroll-behavior: smooth;
+  scroll-padding-top: 88px;
 }
 
 body {
@@ -86,7 +87,7 @@ a {
   position: fixed;
   top: 12px;
   left: 12px;
-  z-index: 10;
+  z-index: 40;
   padding: 10px 14px;
   color: var(--paper);
   background: var(--ink);
@@ -104,7 +105,12 @@ main {
 }
 
 .site-header {
-  height: 92px;
+  height: 72px;
+  position: sticky;
+  top: 0;
+  z-index: 30;
+  background: rgb(243 244 248 / 92%);
+  backdrop-filter: blur(10px);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -136,6 +142,7 @@ main {
 nav {
   display: flex;
   gap: 28px;
+  align-items: center;
 }
 
 nav a {
@@ -148,6 +155,20 @@ nav a {
 
 nav a:hover {
   color: var(--ink);
+}
+
+@media (max-width: 860px) {
+  nav .nav-secondary {
+    display: none;
+  }
+}
+
+nav a[aria-current] {
+  color: var(--ink);
+  text-decoration: underline;
+  text-decoration-color: var(--violet);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 8px;
 }
 
 .hero {
@@ -284,6 +305,41 @@ a:focus-visible {
 
 .secondary-link:hover {
   color: var(--ink);
+}
+
+.cta-button {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+  padding: 12px 20px;
+  color: var(--paper);
+  background: var(--ink);
+  border-radius: 12px;
+  font-size: 0.9rem;
+  font-weight: 720;
+  text-decoration: none;
+  transition: background-color 160ms ease;
+}
+
+.cta-button:hover,
+.cta-button[aria-current] {
+  background: var(--violet);
+}
+
+.cta-button-sm {
+  padding: 8px 14px;
+  font-size: 0.84rem;
+  border-radius: 10px;
+}
+
+nav a.cta-button,
+nav a.cta-button:hover {
+  color: var(--paper);
+  text-decoration: none;
+}
+
+.commands-heading .cta-button {
+  margin-top: 12px;
 }
 
 .version {
@@ -640,7 +696,7 @@ a:focus-visible {
 .ga-dot.is-server, .ga-dest.is-server::before { background: var(--server); }
 .ga-dot.is-local, .ga-dest.is-local::before { background: var(--local); }
 .ga-dot.is-ai, .ga-dest.is-ai::before { background: #c98a1c; }
-.ga-term { position: sticky; top: 24px; overflow: hidden; color: #ececf3; background: #17181e; border: 1px solid #2f3039; border-radius: var(--radius); box-shadow: 16px 18px 0 var(--violet-soft), 0 32px 70px rgb(27 27 54 / 16%); }
+.ga-term { position: sticky; top: 96px; overflow: hidden; color: #ececf3; background: #17181e; border: 1px solid #2f3039; border-radius: var(--radius); box-shadow: 16px 18px 0 var(--violet-soft), 0 32px 70px rgb(27 27 54 / 16%); }
 .ga-bar { display: flex; justify-content: space-between; align-items: center; padding: 12px 14px 12px 21px; color: #8f919c; border-bottom: 1px solid #2f3039; font: 0.68rem "IBM Plex Mono", monospace; }
 .ga-copy { padding: 6px 10px; color: #d9d9e2; background: #22232b; border: 1px solid #343640; border-radius: 6px; cursor: pointer; font: 500 0.66rem "IBM Plex Mono", monospace; }
 .ga-copy:hover { background: #2a2b34; }
@@ -1063,7 +1119,7 @@ a:focus-visible {
 
 .commands-heading {
   position: sticky;
-  top: 40px;
+  top: 104px;
   align-self: start;
 }
 
@@ -1072,7 +1128,7 @@ a:focus-visible {
   margin: 24px 0;
 }
 
-.commands-heading > p:last-child {
+.commands-heading > p:not(.section-label) {
   max-width: 360px;
   color: var(--muted);
   line-height: 1.6;
@@ -1531,11 +1587,7 @@ a:focus-visible {
   }
 
   .site-header {
-    height: 74px;
-  }
-
-  nav .nav-secondary {
-    display: none;
+    height: 64px;
   }
 
   .hero {
