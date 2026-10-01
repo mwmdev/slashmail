@@ -265,6 +265,7 @@ h1 {
 
 .copy-button:focus-visible,
 .copy-block:focus-visible,
+.agent-prompt-copy:focus-visible,
 .terminal-example-tab:focus-visible,
 a:focus-visible {
   outline: 3px solid var(--violet);
@@ -1220,6 +1221,84 @@ nav a.cta-button:hover {
   box-shadow: 14px 16px 0 var(--violet-soft);
 }
 
+.agent-video {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.agent-video-play,
+.agent-video video {
+  position: relative;
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  padding: 0;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  box-shadow: 14px 16px 0 var(--violet-soft);
+}
+
+.agent-video-play {
+  cursor: pointer;
+}
+
+.agent-video video {
+  z-index: 25;
+}
+
+.agent-video-play img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-video-icon {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  display: grid;
+  width: 84px;
+  height: 84px;
+  color: var(--paper);
+  background: var(--ink);
+  border-radius: 50%;
+  place-items: center;
+  transform: translate(-50%, -50%);
+  transition: background-color 160ms ease, transform 160ms ease;
+}
+
+.agent-video-icon svg {
+  width: 34px;
+  height: 34px;
+  margin-left: 4px;
+}
+
+.agent-video-play:hover .agent-video-icon,
+.agent-video-play:focus-visible .agent-video-icon {
+  background: var(--violet);
+  transform: translate(-50%, -50%) scale(1.06);
+}
+
+.agent-video-label {
+  position: absolute;
+  bottom: 20px;
+  left: 20px;
+  display: inline-flex;
+  gap: 12px;
+  padding: 8px 14px;
+  color: var(--paper);
+  background: var(--ink);
+  border-radius: 999px;
+  font: 500 0.78rem "IBM Plex Mono", monospace;
+}
+
+.agent-video-label span {
+  color: #9a9cab;
+}
+
 .agent-demo-bar {
   display: flex;
   justify-content: space-between;
@@ -1369,9 +1448,78 @@ nav a.cta-button:hover {
 
 .release-note {
   max-width: 610px;
-  margin: 25px 0 34px;
+  margin: 25px 0 16px;
   color: #a9abb7;
   line-height: 1.6;
+}
+
+.release-note a {
+  color: var(--paper);
+  text-underline-offset: 3px;
+}
+
+.agent-prompt {
+  max-width: 760px;
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+  margin-bottom: 34px;
+  padding: 14px 14px 14px 18px;
+  background: #22232b;
+  border: 1px solid #343640;
+  border-radius: 12px;
+}
+
+.agent-prompt code {
+  min-width: 0;
+  flex: 1;
+  color: #d9d9e2;
+  overflow-wrap: anywhere;
+  font: 0.78rem/1.65 "IBM Plex Mono", monospace;
+}
+
+.agent-prompt-copy {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  padding: 0;
+  color: #d9d9e2;
+  background: transparent;
+  border: 1px solid #343640;
+  border-radius: 8px;
+  cursor: pointer;
+  place-items: center;
+  transition: background-color 160ms ease, color 160ms ease;
+}
+
+.agent-prompt-copy:hover {
+  background: #2a2b34;
+}
+
+.agent-prompt-copy svg {
+  width: 18px;
+  height: 18px;
+}
+
+.agent-prompt-copy .icon-check,
+.agent-prompt-copy.is-copied .icon-copy,
+.agent-prompt-copy.copy-failed .icon-check {
+  display: none;
+}
+
+.agent-prompt-copy.is-copied .icon-check {
+  display: block;
+}
+
+.agent-prompt-copy.is-copied {
+  color: #b9f6ca;
+  border-color: #3f7a5c;
+}
+
+.agent-prompt-copy.copy-failed {
+  color: #ffb4ab;
+  border-color: #8a4a44;
 }
 
 .download-grid {
@@ -1692,8 +1840,25 @@ nav a.cta-button:hover {
     gap: 46px;
   }
 
-  .agent-demo {
+  .agent-demo,
+  .agent-video-play,
+  .agent-video video {
     box-shadow: 8px 10px 0 var(--violet-soft);
+  }
+
+  .agent-video-icon {
+    width: 64px;
+    height: 64px;
+  }
+
+  .agent-video-icon svg {
+    width: 26px;
+    height: 26px;
+  }
+
+  .agent-video-label {
+    bottom: 12px;
+    left: 12px;
   }
 
   .agent-message,
