@@ -25,10 +25,8 @@
   <title>slashmail — email, from the command line</title>
   <link rel="canonical" href="https://www.slashmail.io/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wdth,wght@75..100,400..800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="styles.css?v=0.8.0-3">
+  <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="styles.css?v=0.8.0-5">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -42,6 +40,7 @@
       <a class="nav-secondary" href="#use-cases">Use cases</a>
       <a class="nav-secondary" href="#agents">Agent skill</a>
       <a class="nav-secondary" href="#commands">Commands</a>
+      <a class="nav-secondary" href="#privacy">Privacy</a>
       <a href="#releases">Releases</a>
       <a href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
     </nav>
@@ -490,6 +489,47 @@ Updated 2 message(s).</pre>
         <article>
           <code>completions</code>
           <p>Generate completions for Bash, Zsh, Fish, PowerShell, or Elvish.</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="commands-section privacy-section" id="privacy" aria-labelledby="privacy-title">
+      <div class="commands-heading">
+        <p class="section-label">Privacy</p>
+        <h2 id="privacy-title">Your mail, your machine.</h2>
+      </div>
+      <div class="command-list">
+        <article>
+          <strong>Slashmail</strong>
+          <p>Runs locally and talks only to your IMAP server. No telemetry, no account, no cloud service.</p>
+        </article>
+        <article>
+          <strong>Connection</strong>
+          <p>TLS 1.2+ with certificate checks for every remote server. Plain text is allowed only for localhost, such as ProtonMail Bridge.</p>
+        </article>
+        <article>
+          <strong>Credentials</strong>
+          <p>Read from an environment variable, a <span class="inline-code">.env</span> file beside your config, or a prompt. Never a command-line flag.</p>
+        </article>
+        <article>
+          <strong>Files</strong>
+          <p>Exports and attachments are written only where you point them, with owner-only permissions on Unix.</p>
+        </article>
+        <article>
+          <strong>Drafts</strong>
+          <p>Saved to the Drafts folder on your own mail server. Slashmail has no way to send.</p>
+        </article>
+        <article>
+          <strong>AI agents</strong>
+          <p>When your LLM agent runs <span class="inline-code">read</span>, its provider receives the full message. For confidential mail, use a local model or a plan whose terms fit your needs.</p>
+        </article>
+        <article>
+          <strong>Hostile mail</strong>
+          <p>A message can contain text that tries to steer your agent. Slashmail asks before bulk changes and cannot send, but keep your agent’s other tools to a minimum.</p>
+        </article>
+        <article>
+          <strong>This site</strong>
+          <p>No analytics, tracking scripts, or third-party requests. Fonts are served from this site.</p>
         </article>
       </div>
     </section>
