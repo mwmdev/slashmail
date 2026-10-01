@@ -26,7 +26,7 @@
   <link rel="canonical" href="https://www.slashmail.io/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=0.8.0-12">
+  <link rel="stylesheet" href="styles.css?v=0.8.0-18">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -38,11 +38,10 @@
     <nav aria-label="Primary navigation">
       <a class="nav-secondary" href="#setup">Setup</a>
       <a class="nav-secondary" href="#use-cases">Use cases</a>
-      <a class="nav-secondary" href="#agents">Agent skill</a>
       <a class="nav-secondary" href="#commands">Commands</a>
       <a class="nav-secondary" href="#privacy">Privacy</a>
-      <a class="cta-button cta-button-sm" href="#releases">Download</a>
-      <a href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer">GitHub <span aria-hidden="true">↗</span></a>
+      <a class="nav-secondary cta-button-outline" href="#demo">Watch the demo</a>
+      <a class="cta-button cta-button-sm" href="#get-started">Get started</a>
     </nav>
   </header>
 
@@ -53,16 +52,9 @@
         <h1 id="hero-title">Your inbox has a command line.</h1>
         <p class="hero-intro">Search, read, draft, and clean up email without leaving the terminal. One lightweight CLI your agent can use.</p>
 
-        <div class="install-row" aria-label="Installation command">
-          <code>cargo install slashmail</code>
-          <button class="copy-button" type="button" data-copy="cargo install slashmail" aria-label="Copy install command">
-            <span class="copy-label">Copy</span>
-          </button>
-        </div>
-
-        <div class="hero-links">
-          <a class="cta-button" href="#releases">Download <span aria-hidden="true">↓</span></a>
-          <a class="secondary-link" href="https://github.com/mwmdev/slashmail#slashmail" target="_blank" rel="noreferrer">Read the docs</a>
+        <div class="hero-install">
+          <pre class="copy-block"><code>npx skills add mwmdev/slashmail</code></pre>
+          <p>Then ask your agent to set up your mailbox. <a href="#get-started">Other ways to install</a></p>
         </div>
       </div>
 
@@ -151,6 +143,90 @@
     </section>
 
 
+    <section class="setup-section get-started-section" id="get-started" aria-labelledby="get-started-title">
+      <div class="section-intro">
+        <p class="section-label">Get started</p>
+        <h2 id="get-started-title">Up and running in two steps.</h2>
+      </div>
+
+      <ol class="setup-steps">
+        <li class="setup-step">
+          <h3>Add the skill</h3>
+          <pre class="copy-block"><code>npx skills add mwmdev/slashmail</code></pre>
+          <p>Works with Claude Code, Codex, Cursor and more. Add <span class="inline-code">DISABLE_TELEMETRY=1</span> to opt out of the installer’s telemetry.</p>
+        </li>
+        <li class="setup-step">
+          <h3>Ask your agent</h3>
+          <pre class="copy-block"><code>Set up slashmail for my Gmail account.</code></pre>
+          <p>It installs slashmail, writes your config, and asks you to save your password yourself.</p>
+        </li>
+      </ol>
+
+      <details class="manual-setup">
+        <summary>Set up by hand</summary>
+      <ol class="setup-steps">
+        <li class="setup-step">
+          <h3>Install</h3>
+          <pre class="copy-block"><code>cargo install slashmail</code></pre>
+          <p>Or download a binary:</p>
+          <dl class="config-paths download-links">
+            <div><dt>Linux</dt><dd><a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-linux-x86_64.tar.gz">x86_64</a> <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-linux-aarch64.tar.gz">ARM64</a></dd></div>
+            <div><dt>Mac</dt><dd><a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-macos-aarch64.tar.gz">Apple silicon</a> <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-macos-x86_64.tar.gz">Intel</a></dd></div>
+            <div><dt>Win</dt><dd><a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-windows-x86_64.zip">x86_64</a></dd></div>
+          </dl>
+          <p>v0.8.0 · <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.0" target="_blank" rel="noreferrer">Release notes and checksums</a></p>
+        </li>
+        <li class="setup-step">
+          <h3>Add your account</h3>
+          <div class="provider-tabs" role="tablist" aria-label="Mail provider">
+            <button type="button" role="tab" id="prov-tab-gmail" aria-controls="prov-gmail" aria-selected="true">Gmail</button>
+            <button type="button" role="tab" id="prov-tab-outlook" aria-controls="prov-outlook" aria-selected="false" tabindex="-1">Outlook</button>
+            <button type="button" role="tab" id="prov-tab-yahoo" aria-controls="prov-yahoo" aria-selected="false" tabindex="-1">Yahoo</button>
+            <button type="button" role="tab" id="prov-tab-icloud" aria-controls="prov-icloud" aria-selected="false" tabindex="-1">iCloud</button>
+            <button type="button" role="tab" id="prov-tab-proton" aria-controls="prov-proton" aria-selected="false" tabindex="-1">Proton</button>
+            <button type="button" role="tab" id="prov-tab-other" aria-controls="prov-other" aria-selected="false" tabindex="-1">Other</button>
+          </div>
+          <pre class="copy-block" role="tabpanel" id="prov-gmail" aria-labelledby="prov-tab-gmail"><code>host = "imap.gmail.com"
+tls = true
+user = "you@gmail.com"</code></pre>
+          <pre class="copy-block" role="tabpanel" id="prov-outlook" aria-labelledby="prov-tab-outlook" hidden><code>host = "outlook.office365.com"
+tls = true
+user = "you@outlook.com"
+trash_folder = "Deleted Items"</code></pre>
+          <pre class="copy-block" role="tabpanel" id="prov-yahoo" aria-labelledby="prov-tab-yahoo" hidden><code>host = "imap.mail.yahoo.com"
+tls = true
+user = "you@yahoo.com"</code></pre>
+          <pre class="copy-block" role="tabpanel" id="prov-icloud" aria-labelledby="prov-tab-icloud" hidden><code>host = "imap.mail.me.com"
+tls = true
+user = "you@icloud.com"</code></pre>
+          <pre class="copy-block" role="tabpanel" id="prov-proton" aria-labelledby="prov-tab-proton" hidden><code>host = "127.0.0.1"
+port = 1143
+user = "you@proton.me"</code></pre>
+          <pre class="copy-block" role="tabpanel" id="prov-other" aria-labelledby="prov-tab-other" hidden><code>host = "imap.example.com"
+tls = true
+user = "you@example.com"</code></pre>
+          <dl class="config-paths">
+            <div><dt>Linux</dt><dd>~/.config/slashmail/config.toml</dd></div>
+            <div><dt>Mac</dt><dd>~/Library/Application Support/slashmail/config.toml</dd></div>
+            <div><dt>Win</dt><dd>%APPDATA%\slashmail\config.toml</dd></div>
+          </dl>
+        </li>
+        <li class="setup-step">
+          <h3>Set your password</h3>
+          <pre class="copy-block"><code>export SLASHMAIL_PASS="your-password"</code></pre>
+          <p>Or save it in a <span class="inline-code">.env</span> file next to <span class="inline-code">config.toml</span>:</p>
+          <pre class="copy-block"><code>SLASHMAIL_PASS="your-password"</code></pre>
+          <p>Or leave it unset and enter it when asked.</p>
+        </li>
+        <li class="setup-step">
+          <h3>Ready</h3>
+          <pre class="copy-block"><code>slashmail status</code></pre>
+          <p>Lists your folders with message counts.</p>
+        </li>
+      </ol>
+      </details>
+    </section>
+
     <section class="setup-section" id="setup" aria-labelledby="setup-title">
       <div class="section-intro">
         <p class="section-label">Setup</p>
@@ -197,37 +273,13 @@
           </div>
         </div>
       </div>
-
-      <ol class="setup-steps">
-        <li class="setup-step">
-          <h3>Install</h3>
-          <pre class="copy-block"><code>cargo install slashmail</code></pre>
-          <p>Or <a href="#releases">download a binary</a>.</p>
-        </li>
-        <li class="setup-step">
-          <h3>Add your account</h3>
-          <pre class="copy-block"><code>host = "imap.gmail.com"
-tls = true
-user = "you@gmail.com"</code></pre>
-          <dl class="config-paths">
-            <div><dt>Linux</dt><dd>~/.config/slashmail/config.toml</dd></div>
-            <div><dt>Mac</dt><dd>~/Library/Application Support/slashmail/config.toml</dd></div>
-            <div><dt>Win</dt><dd>%APPDATA%\slashmail\config.toml</dd></div>
-          </dl>
-        </li>
-        <li class="setup-step">
-          <h3>Check the connection</h3>
-          <pre class="copy-block"><code>slashmail status</code></pre>
-          <p>Enter your password when asked, or set <span class="inline-code">SLASHMAIL_PASS</span>.</p>
-        </li>
-      </ol>
     </section>
 
     <section class="examples-section" id="use-cases" aria-labelledby="examples-title">
       <div class="section-intro">
         <p class="section-label">Real commands, real work</p>
         <h2 id="examples-title">Start with an outcome.</h2>
-        <p>Every filter runs server-side and combines with AND logic. Use the same commands by hand, in scripts, or through an agent.</p>
+        <p>Use the same commands by hand, in scripts, or through an agent.</p>
       </div>
 
       <div class="ga">
@@ -281,7 +333,6 @@ user = "you@gmail.com"</code></pre>
 │  388 ┆ personal ┆ INBOX   ┆ hello@fiber.net  ┆ Your invoice ┆  22K │
 └──────┴──────────┴─────────┴──────────────────┴──────────────┴──────┘
 3 message(s)</pre>
-<p class="ga-dest is-local">Shown on your machine</p>
 </div>
 <div class="ga-panel" role="tabpanel" id="ga-panel-attachments" aria-labelledby="ga-tab-attachments" hidden>
 <p class="ga-cmd">
@@ -370,69 +421,9 @@ Updated 2 message(s).</pre>
 </div>
 </div>
 </div>
-
-      <p class="ai-disclosure">
-        <svg class="ai-disclosure-icon" viewBox="0 0 24 24" aria-hidden="true">
-          <path d="M12 3 2 21h20L12 3Z" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/>
-          <path d="M12 9v5m0 3.5v.01" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
-        </svg>
-        <span><span class="inline-code">slashmail read</span> keeps email content in your terminal. If you pipe its output into Claude, Codex, or another hosted AI service, the selected message content is sent to that third party and handled under its privacy terms.</span>
-      </p>
     </section>
 
-    <section class="agent-section" id="agents" aria-labelledby="agents-title">
-      <div class="agent-copy">
-        <p class="section-label">Agent skill included</p>
-        <h2 id="agents-title">Speak with your mailbox.</h2>
-        <p>Slashmail ships with a reusable skill for coding agents. Ask in plain language; the skill turns intent into explicit, inspectable CLI actions.</p>
-        <ul class="agent-qualities" aria-label="Agent skill qualities">
-          <li>Never sends: replies and new messages are saved as drafts</li>
-          <li>Previews bulk changes with a dry run first</li>
-          <li>Reads without marking messages as read</li>
-          <li>Acts only on the exact messages it listed</li>
-        </ul>
-        <div class="hero-links">
-          <a class="cta-button" href="#releases">Download slashmail <span aria-hidden="true">↓</span></a>
-          <a class="primary-link" href="https://github.com/mwmdev/slashmail/tree/main/skills/slashmail" target="_blank" rel="noreferrer">View the agent skill <span aria-hidden="true">→</span></a>
-        </div>
-      </div>
-
-      <div class="agent-demo" aria-label="Example agent workflow">
-        <div class="agent-demo-bar">
-          <span>agent / slashmail</span>
-          <span class="skill-ready">skill ready</span>
-        </div>
-        <div class="agent-message">
-          <span class="message-author">You</span>
-          <p>Find the latest invoice from Acme and draft a short reply confirming receipt.</p>
-        </div>
-        <div class="agent-action">
-          <span class="action-number">01</span>
-          <div>
-            <code>slashmail search --from acme --subject invoice --limit 1</code>
-            <p>Read-only lookup</p>
-          </div>
-        </div>
-        <div class="agent-action">
-          <span class="action-number">02</span>
-          <div>
-            <code>slashmail read --folder INBOX --uid 1842</code>
-            <p>Inspect the exact message</p>
-          </div>
-        </div>
-        <div class="agent-action">
-          <span class="action-number">03</span>
-          <div>
-            <code>printf 'Received—thank you.' | slashmail reply 1842</code>
-            <p>Save a draft for review</p>
-          </div>
-        </div>
-        <div class="agent-safety">
-          <span aria-hidden="true">✓</span>
-          <p>Draft saved for your review.</p>
-        </div>
-      </div>
-
+    <section class="video-section" id="demo" aria-label="Demo video">
       <figure class="agent-video">
         <button class="agent-video-play" type="button" aria-label="Play the demo video, 1 minute 51 seconds">
           <img src="media/slashmail-agent-demo-1-poster.webp" width="1280" height="720" alt="Video still: Your agent can use it too" loading="lazy">
@@ -449,7 +440,7 @@ Updated 2 message(s).</pre>
         <p class="section-label">The complete command set</p>
         <h2 id="commands-title">Your inbox toolbox</h2>
         <p>Focused commands that compose cleanly in your terminal, scripts, and agent workflows.</p>
-        <a class="cta-button" href="#releases">Download slashmail <span aria-hidden="true">↓</span></a>
+        <a class="cta-button" href="#get-started">Get started <span aria-hidden="true">↓</span></a>
       </div>
       <div class="command-list">
         <article>
@@ -511,7 +502,6 @@ Updated 2 message(s).</pre>
       <div class="commands-heading">
         <p class="section-label">Privacy</p>
         <h2 id="privacy-title">Your mail, your machine.</h2>
-        <a class="cta-button" href="#releases">Download slashmail <span aria-hidden="true">↓</span></a>
       </div>
       <div class="command-list">
         <article>
@@ -549,78 +539,17 @@ Updated 2 message(s).</pre>
       </div>
     </section>
 
-    <section class="releases-section" id="releases" aria-labelledby="releases-title">
-      <div class="section-intro release-intro">
-        <h2 id="releases-title">Pick your release.</h2>
-        <p>Install with Cargo, or download a small standalone archive for your platform.</p>
-      </div>
-
-      <div class="latest-release">
-        <div class="release-summary">
-          <div>
-            <span class="release-badge">Latest stable</span>
-            <h3>slashmail <span>v0.8.0</span></h3>
-          </div>
-          <time datetime="2026-09-28">28 September 2026</time>
-        </div>
-        <p class="release-note">Download a release and <a href="https://github.com/mwmdev/slashmail/tree/main/skills/slashmail" target="_blank" rel="noreferrer">install the skill</a>, or ask your agent to do it by pointing it to slashmail.io.</p>
-        <div class="agent-prompt">
-          <code>Install slashmail for me. Get it from https://www.slashmail.io: run `cargo install slashmail` if Rust is installed, otherwise download the latest release for my platform and put the binary on my PATH. Then install the agent skill from https://github.com/mwmdev/slashmail/tree/main/skills/slashmail.</code>
-          <button class="agent-prompt-copy" type="button" aria-label="Copy install prompt">
-            <svg class="icon-copy" viewBox="0 0 24 24" aria-hidden="true"><rect x="9" y="9" width="11" height="11" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="M15 9V6.5A2.5 2.5 0 0 0 12.5 4h-6A2.5 2.5 0 0 0 4 6.5v6A2.5 2.5 0 0 0 6.5 15H9" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
-            <svg class="icon-check" viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12.5 4.5 4.5L19 7.5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
-          </button>
-        </div>
-        <div class="download-grid" aria-label="Version 0.8.0 downloads">
-          <div class="download-platform">
-            <strong>Linux</strong>
-            <div class="download-options">
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-linux-x86_64.tar.gz">
-                <span>x86_64</span><span aria-hidden="true">↓</span>
-              </a>
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-linux-aarch64.tar.gz">
-                <span>ARM64</span><span aria-hidden="true">↓</span>
-              </a>
-            </div>
-          </div>
-          <div class="download-platform">
-            <strong>macOS</strong>
-            <div class="download-options">
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-macos-aarch64.tar.gz">
-                <span>Apple silicon</span><span aria-hidden="true">↓</span>
-              </a>
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-macos-x86_64.tar.gz">
-                <span>Intel</span><span aria-hidden="true">↓</span>
-              </a>
-            </div>
-          </div>
-          <div class="download-platform">
-            <strong>Windows</strong>
-            <div class="download-options">
-              <a href="https://github.com/mwmdev/slashmail/releases/download/v0.8.0/slashmail-windows-x86_64.zip">
-                <span>x86_64</span><span aria-hidden="true">↓</span>
-              </a>
-            </div>
-          </div>
-          <div class="download-platform">
-            <strong>crates.io</strong>
-            <div class="download-options">
-              <a href="https://crates.io/crates/slashmail/0.8.0">
-                <span>cargo install slashmail</span><span aria-hidden="true">↗</span>
-              </a>
-            </div>
-          </div>
-        </div>
-
-        <div class="release-footer">
-          <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.0" target="_blank" rel="noreferrer">Release notes <span aria-hidden="true">→</span></a>
-          <a href="https://github.com/mwmdev/slashmail/releases" target="_blank" rel="noreferrer">Checksums and all assets <span aria-hidden="true">→</span></a>
-        </div>
-      </div>
-
-    </section>
-
   </main>
+
+  <footer class="site-footer">
+    <span>slashmail</span>
+    <nav aria-label="Footer navigation">
+      <a href="#privacy">Privacy</a>
+      <a class="footer-github" href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer" aria-label="Slashmail on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+    </nav>
+  </footer>
 
   <a class="to-top" href="#" aria-label="Back to top">
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
@@ -628,8 +557,6 @@ Updated 2 message(s).</pre>
 
 
   <script>
-    const copyButton = document.querySelector('.copy-button');
-    const copyLabel = copyButton.querySelector('.copy-label');
     const copyTimers = new WeakMap();
 
     function resetCopyState(element) {
@@ -644,18 +571,8 @@ Updated 2 message(s).</pre>
       }, 1600));
     }
 
-    copyButton.addEventListener('click', async () => {
-      try {
-        await navigator.clipboard.writeText(copyButton.dataset.copy);
-        copyLabel.textContent = 'Copied';
-        window.setTimeout(() => { copyLabel.textContent = 'Copy'; }, 1600);
-      } catch {
-        copyLabel.textContent = 'Select command';
-      }
-    });
-
     document.querySelectorAll('.copy-block').forEach((block) => {
-      const heading = block.closest('.setup-step').querySelector('h3').textContent;
+      const heading = block.closest('.setup-step')?.querySelector('h3').textContent ?? 'Install';
       const label = `Copy ${heading} command`;
       block.setAttribute('role', 'button');
       block.setAttribute('tabindex', '0');
@@ -681,6 +598,29 @@ Updated 2 message(s).</pre>
           event.preventDefault();
           copyCommand();
         }
+      });
+    });
+
+
+    const providerTabs = [...document.querySelectorAll('.provider-tabs [role="tab"]')];
+
+    function selectProvider(index, moveFocus = false) {
+      providerTabs.forEach((tab, tabIndex) => {
+        const selected = tabIndex === index;
+        tab.setAttribute('aria-selected', selected);
+        tab.tabIndex = selected ? 0 : -1;
+        document.getElementById(tab.getAttribute('aria-controls')).hidden = !selected;
+        if (selected && moveFocus) tab.focus();
+      });
+    }
+
+    providerTabs.forEach((tab, index) => {
+      tab.addEventListener('click', () => selectProvider(index));
+      tab.addEventListener('keydown', (event) => {
+        const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+        if (!step) return;
+        event.preventDefault();
+        selectProvider((index + step + providerTabs.length) % providerTabs.length, true);
       });
     });
 
@@ -718,20 +658,6 @@ Updated 2 message(s).</pre>
       video.focus();
     });
 
-    const promptCopy = document.querySelector('.agent-prompt-copy');
-    promptCopy.addEventListener('click', async () => {
-      resetCopyState(promptCopy);
-      try {
-        await navigator.clipboard.writeText(promptCopy.previousElementSibling.textContent.trim());
-        promptCopy.classList.add('is-copied');
-        promptCopy.setAttribute('aria-label', 'Install prompt copied');
-      } catch {
-        promptCopy.classList.add('copy-failed');
-        promptCopy.setAttribute('aria-label', 'Could not copy install prompt');
-      }
-      scheduleCopyReset(promptCopy, 'Copy install prompt');
-    });
-
     const galleryTabs = [...document.querySelectorAll('.ga-tab')];
     const galleryCopy = document.querySelector('.ga-copy');
 
@@ -767,24 +693,108 @@ Updated 2 message(s).</pre>
       window.setTimeout(() => { galleryCopy.textContent = 'Copy command'; }, 1600);
     });
 
+    const terminalShell = document.querySelector('.terminal-shell');
+    const terminalState = terminalShell.querySelector('.terminal-state');
     const terminalTabs = [...document.querySelectorAll('.terminal-example-tab')];
     const terminalSlides = [...document.querySelectorAll('.terminal-slide')];
+    const terminalParts = '.status-output, .brief-output, tr, .brief-heading, .brief-list li, .terminal-summary, .terminal-ready';
+    const animateTerminal = !window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const terminalCancelled = Symbol('cancelled');
+    let terminalRun = 0;
+    let terminalIndex = 0;
 
-    function selectTerminalSlide(index, moveFocus = false) {
+    function terminalPause(ms, run) {
+      return new Promise((resolve, reject) => {
+        window.setTimeout(() => (run === terminalRun ? resolve() : reject(terminalCancelled)), ms);
+      });
+    }
+
+    function setTerminalState(state) {
+      terminalShell.dataset.state = state;
+      terminalState.textContent = state;
+    }
+
+    function countUp(cell, run) {
+      const target = Number(cell.dataset.value ??= cell.textContent);
+      const start = performance.now();
+      const step = (now) => {
+        const t = run === terminalRun ? Math.min(1, (now - start) / 650) : 1;
+        cell.textContent = Math.round(target * (1 - (1 - t) ** 3));
+        if (t < 1) window.requestAnimationFrame(step);
+      };
+      window.requestAnimationFrame(step);
+    }
+
+    function resetTerminalSlides() {
+      terminalSlides.forEach((slide) => {
+        const command = slide.querySelector('.terminal-command');
+        if (command.dataset.html) command.innerHTML = command.dataset.html;
+        slide.querySelectorAll('.is-pending').forEach((part) => part.classList.remove('is-pending'));
+      });
+      setTerminalState('connected');
+    }
+
+    async function playTerminal(index, moveFocus = false) {
+      const run = ++terminalRun;
+      terminalIndex = index;
+      resetTerminalSlides();
       terminalTabs.forEach((tab, tabIndex) => {
         const selected = tabIndex === index;
         tab.setAttribute('aria-selected', selected);
-        tab.setAttribute('tabindex', selected ? '0' : '-1');
+        tab.tabIndex = selected ? 0 : -1;
+        tab.classList.remove('is-counting');
         terminalSlides[tabIndex].hidden = !selected;
       });
+      if (moveFocus) terminalTabs[index].focus();
+      if (!animateTerminal) return;
 
-      if (moveFocus) {
-        terminalTabs[index].focus();
+      const slide = terminalSlides[index];
+      const command = slide.querySelector('.terminal-command');
+      command.dataset.html ??= command.innerHTML;
+      const text = command.dataset.text ??= command.textContent.replace(/^\$\s*/, '');
+      const parts = [...slide.querySelectorAll(terminalParts)];
+      parts.forEach((part) => part.classList.add('is-pending'));
+
+      try {
+        command.innerHTML = '<span class="prompt">$</span> ';
+        const typed = document.createTextNode('');
+        const caret = document.createElement('span');
+        caret.className = 'cursor';
+        command.append(typed, caret);
+        await terminalPause(420, run);
+        const delay = Math.min(38, 2400 / text.length);
+        for (const char of text) {
+          typed.data += char;
+          await terminalPause(delay * (0.4 + Math.random() * 1.2), run);
+        }
+        await terminalPause(280, run);
+        command.innerHTML = command.dataset.html;
+        setTerminalState('running');
+        await terminalPause(slide.id === 'terminal-slide-brief' ? 1100 : 380, run);
+        for (const part of parts) {
+          part.classList.remove('is-pending');
+          if (part.tagName === 'TR' && slide.id === 'terminal-slide-status') {
+            part.querySelectorAll('td + td').forEach((cell) => countUp(cell, run));
+          }
+          await terminalPause(part.matches('.brief-list li') ? 340 : 80, run);
+        }
+        setTerminalState('connected');
+        terminalTabs[index].classList.add('is-counting');
+      } catch (error) {
+        if (error !== terminalCancelled) throw error;
       }
     }
 
+    terminalShell.addEventListener('animationend', (event) => {
+      if (event.animationName === 'terminal-progress') playTerminal((terminalIndex + 1) % terminalTabs.length);
+    });
+
+    new IntersectionObserver(([entry]) => {
+      terminalShell.classList.toggle('is-offscreen', !entry.isIntersecting);
+    }).observe(terminalShell);
+
     terminalTabs.forEach((tab, index) => {
-      tab.addEventListener('click', () => selectTerminalSlide(index));
+      tab.addEventListener('click', () => playTerminal(index));
       tab.addEventListener('keydown', (event) => {
         let nextIndex;
         if (event.key === 'ArrowRight') {
@@ -800,9 +810,11 @@ Updated 2 message(s).</pre>
         }
 
         event.preventDefault();
-        selectTerminalSlide(nextIndex, true);
+        playTerminal(nextIndex, true);
       });
     });
+
+    playTerminal(0);
   </script>
 </body>
 </html>

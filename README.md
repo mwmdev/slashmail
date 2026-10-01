@@ -411,7 +411,15 @@ slashmail completions fish > ~/.config/fish/completions/slashmail.fish
 
 slashmail includes a skill file (`skills/slashmail/SKILL.md`) that teaches AI agents how to manage your email through natural language.
 
-**Claude Code** — copy the skill into your skills directory:
+Install it with the [skills CLI](https://www.skills.sh/docs/cli) (Claude Code, Codex, Cursor, and more; set `DISABLE_TELEMETRY=1` to opt out of its telemetry):
+
+```bash
+npx skills add mwmdev/slashmail
+```
+
+Then ask your agent to "set up slashmail for my Gmail account". The skill installs the binary if needed, writes `config.toml`, and asks you to put your password in `.env` yourself.
+
+To install by hand instead, **Claude Code** — copy the skill into your skills directory:
 
 ```bash
 mkdir -p ~/.claude/skills/slashmail

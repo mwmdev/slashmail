@@ -11,6 +11,11 @@ Email interaction via the `slashmail` CLI, an IMAP client.
 
 **Configuration**: Config file location is OS-dependent (Linux: `~/.config/slashmail/config.toml`, macOS: `~/Library/Application Support/slashmail/config.toml`, Windows: `%APPDATA%\slashmail\config.toml`). Direct/legacy connections use `SLASHMAIL_PASS`. Named accounts define `pass_env` and can be selected with `--account NAME`. Only `search`, `read`, `count`, `status`, and `quota` support `--all-accounts`.
 
+**First-time setup**: If no config file exists, set slashmail up for the user:
+1. Ask for their email address and provider. Write `config.toml` with `host`, `tls = true`, and `user` (Gmail `imap.gmail.com`; Outlook `outlook.office365.com` plus `trash_folder = "Deleted Items"`; Yahoo `imap.mail.yahoo.com`; iCloud `imap.mail.me.com`; Proton Bridge `host = "127.0.0.1"`, `port = 1143`, no TLS). Never overwrite an existing config.
+2. Never ask for, accept, or write the password. Tell the user to create `.env` beside `config.toml` themselves containing `SLASHMAIL_PASS=their-password` (Gmail, Outlook, Yahoo, and iCloud need an app password), and to keep it private.
+3. When they confirm, run `slashmail status` and report the result.
+
 Slashmail automatically loads `.env` beside the selected `config.toml` without overriding values already present in the process environment. Store each named account password under the variable named by `pass_env`. Keep `.env` private and out of version control.
 
 ```dotenv
