@@ -489,7 +489,8 @@ All errors print to stderr. Combine `--yes` with cron or scripts for unattended 
 
 ### Login failed
 
-- Gmail and Outlook require [App Passwords](https://support.google.com/accounts/answer/185833), not your account password
+- Gmail requires an [App Password](https://support.google.com/accounts/answer/185833), not your account password
+- Outlook.com and Microsoft 365 no longer accept passwords over IMAP (OAuth only), so they are not supported yet
 - ProtonMail Bridge: use the bridge-generated password, not your ProtonMail account password
 - Fastmail: use an app-specific password from Settings → Privacy & Security
 

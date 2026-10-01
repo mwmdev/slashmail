@@ -236,26 +236,6 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
-.hero-install {
-  max-width: 440px;
-}
-
-.hero-install .copy-block code {
-  font-size: 0.86rem;
-}
-
-.hero-install p {
-  margin: 14px 0 0;
-  color: var(--muted);
-  font-size: 0.9rem;
-}
-
-.hero-install a {
-  color: var(--ink);
-  font-weight: 650;
-  text-underline-offset: 3px;
-}
-
 .cta-button {
   display: inline-flex;
   gap: 8px;
@@ -355,7 +335,7 @@ nav a.cta-button:hover {
 
 .terminal-body {
   position: relative;
-  min-height: 400px;
+  min-height: 470px;
   padding: 30px 31px 34px;
   font: 0.79rem/1.65 "IBM Plex Mono", monospace;
 }
@@ -438,21 +418,56 @@ nav a.cta-button:hover {
   margin-left: 2px;
 }
 
-.terminal-slide :is(.status-output, .brief-output, tr, .brief-heading, .brief-list li, .terminal-summary, .terminal-ready) {
+.terminal-slide :is(.terminal-command, .status-output, tr, .terminal-summary, .terminal-ready),
+.ga-term :is(.ga-line, .ga-dest) {
   transition: opacity 280ms ease, transform 280ms ease;
 }
 
-.terminal-slide .is-pending {
+.terminal-slide .is-pending,
+.ga-term .is-pending {
   opacity: 0;
+}
+
+.terminal-slide .is-pending:not(tr) {
   transform: translateY(6px);
 }
 
-.terminal-slide .brief-list li {
-  transition: opacity 280ms ease, transform 280ms ease, background 900ms ease;
+.ga-cmd .cursor {
+  margin-left: 2px;
 }
 
-.terminal-slide .brief-list li.is-pending {
-  background: rgb(148 232 195 / 12%);
+.terminal-command-next {
+  margin-top: 18px;
+}
+
+.attach-output {
+  font-size: 0.64rem;
+}
+
+.attach-output th,
+.attach-output td {
+  padding-inline: 6px;
+}
+
+.attach-output th:first-child,
+.attach-output td:first-child {
+  width: 12%;
+  text-align: right;
+}
+
+.attach-output th:nth-child(2),
+.attach-output td:nth-child(2) {
+  width: 42%;
+  text-align: left;
+}
+
+.attach-output th:nth-child(3),
+.attach-output td:nth-child(3) {
+  width: 30%;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .terminal-example-tab {
@@ -569,58 +584,6 @@ nav a.cta-button:hover {
 .terminal-summary {
   margin: 10px 0 0;
   color: #777986;
-}
-
-.brief-output {
-  overflow: hidden;
-  color: #a9abb7;
-  background: #1d1e25;
-  border: 1px solid #343640;
-  border-radius: 7px;
-}
-
-.brief-heading {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  margin: 0;
-  padding: 9px 11px;
-  color: #d9d9e2;
-  background: #22232b;
-  border-bottom: 1px solid #343640;
-}
-
-.brief-heading span {
-  color: var(--mint);
-  font-size: 0.68rem;
-}
-
-.brief-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.brief-list li {
-  display: grid;
-  grid-template-columns: 54px minmax(0, 1fr);
-  gap: 10px;
-  padding: 7px 11px;
-  border-bottom: 1px solid #343640;
-}
-
-.brief-list li:last-child {
-  border-bottom: 0;
-}
-
-.brief-label {
-  color: #f5c26b;
-  font-size: 0.62rem;
-  text-transform: uppercase;
-}
-
-.brief-label.is-info {
-  color: #73d9e7;
 }
 
 .terminal-example-nav {
@@ -1035,12 +998,137 @@ nav a.cta-button:hover {
 .map-folders li {
   display: flex;
   justify-content: space-between;
-  padding: 8px 0;
+  margin-inline: -8px;
+  padding: 8px;
   border-top: 1px solid var(--line);
+  border-radius: 6px;
+  transition: background 200ms ease, color 200ms ease;
 }
 
 .map-folders span {
   color: var(--muted);
+}
+
+.map-folders li.is-hit {
+  color: var(--ink);
+  background: var(--violet-soft);
+  animation: map-hit 900ms ease-in-out infinite alternate;
+}
+
+@keyframes map-hit {
+  to {
+    background: #d6d6ff;
+  }
+}
+
+/* Interactive system map */
+.map-actors li {
+  cursor: default;
+  transition: transform 200ms ease, border-color 200ms ease, box-shadow 200ms ease;
+}
+
+.map-actors li:focus-visible {
+  outline: 3px solid var(--violet);
+  outline-offset: 2px;
+}
+
+.system-map[data-active="0"] .map-actors li:nth-child(1),
+.system-map[data-active="1"] .map-actors li:nth-child(2),
+.system-map[data-active="2"] .map-actors li:nth-child(3) {
+  border-color: var(--violet);
+  box-shadow: 4px 5px 0 var(--violet-soft);
+  transform: translateX(6px);
+}
+
+.map-fan path {
+  transition: stroke 200ms ease, stroke-width 200ms ease, opacity 200ms ease;
+}
+
+.system-map:hover .map-fan path,
+.system-map:focus-within .map-fan path {
+  stroke-dasharray: 5 4;
+  animation: map-flow 700ms linear infinite;
+}
+
+.system-map:not([data-active=""]) .map-fan path {
+  opacity: 0.2;
+}
+
+.system-map[data-active="0"] .map-fan path:nth-child(1),
+.system-map[data-active="1"] .map-fan path:nth-child(2),
+.system-map[data-active="2"] .map-fan path:nth-child(3) {
+  opacity: 1;
+  stroke: var(--violet);
+  stroke-width: 2;
+}
+
+@keyframes map-flow {
+  to {
+    stroke-dashoffset: -9;
+  }
+}
+
+.map-pill {
+  transition: border-color 200ms ease, color 200ms ease;
+}
+
+.system-map:not([data-active=""]) .map-fan .map-pill {
+  color: var(--violet);
+  border-color: var(--violet);
+}
+
+.map-core,
+.map-server {
+  transition: transform 250ms ease, box-shadow 250ms ease;
+}
+
+.system-map:hover .map-core,
+.system-map:focus-within .map-core {
+  box-shadow: 14px 16px 0 var(--violet-soft), 0 0 0 4px rgb(102 101 232 / 18%);
+  transform: scale(1.03);
+}
+
+.system-map:hover .map-server,
+.system-map:focus-within .map-server {
+  transform: translateY(-3px);
+}
+
+.map-duplex-line::before {
+  position: absolute;
+  top: -3px;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  content: "";
+  opacity: 0;
+}
+
+.is-out::before {
+  background: var(--violet);
+}
+
+.is-in::before {
+  background: var(--mint);
+}
+
+.system-map:hover .is-out::before,
+.system-map:focus-within .is-out::before {
+  animation: map-packet-out 1100ms linear infinite;
+}
+
+.system-map:hover .is-in::before,
+.system-map:focus-within .is-in::before {
+  animation: map-packet-in 1100ms linear 550ms infinite;
+}
+
+@keyframes map-packet-out {
+  from { left: 0; opacity: 1; }
+  to { left: calc(100% - 6px); opacity: 1; }
+}
+
+@keyframes map-packet-in {
+  from { left: calc(100% - 6px); opacity: 1; }
+  to { left: 0; opacity: 1; }
 }
 
 .setup-steps {
@@ -1088,42 +1176,6 @@ nav a.cta-button:hover {
 .config-paths {
   margin: 14px 0 0;
   font-size: 0.78rem;
-}
-
-.provider-tabs {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 12px;
-}
-
-.provider-tabs button {
-  padding: 5px 11px;
-  color: var(--muted);
-  background: none;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  cursor: pointer;
-  font: 650 0.78rem "Instrument Sans", sans-serif;
-}
-
-.provider-tabs button:hover {
-  color: var(--ink);
-}
-
-.provider-tabs button[aria-selected="true"] {
-  color: var(--paper);
-  background: var(--ink);
-  border-color: var(--ink);
-}
-
-.provider-tabs button:focus-visible {
-  outline: 3px solid var(--violet);
-  outline-offset: 2px;
-}
-
-.copy-block[hidden] {
-  display: none;
 }
 
 .setup-step .copy-block + p {
@@ -1211,6 +1263,30 @@ nav a.cta-button:hover {
   border-bottom: 1px solid var(--line);
 }
 
+.cmd-name {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  align-self: start;
+}
+
+.cmd-name svg {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  transition: stroke 160ms ease, transform 160ms ease;
+}
+
+.command-list article:hover .cmd-name svg {
+  stroke: var(--violet);
+  transform: scale(1.15);
+}
+
 .command-list code {
   color: var(--violet);
   font: 500 0.78rem "IBM Plex Mono", monospace;
@@ -1245,7 +1321,7 @@ nav a.cta-button:hover {
   justify-content: space-between;
   align-items: center;
   margin-inline: auto;
-  padding: 28px 0 40px;
+  padding: 28px 80px 40px 0;
   color: var(--muted);
   border-top: 1px solid var(--line);
   font: 500 0.8rem "IBM Plex Mono", monospace;
@@ -1332,6 +1408,22 @@ nav a.cta-button:hover {
 
 .agent-video-label span {
   color: #9a9cab;
+}
+
+.step-sub {
+  margin: 0 0 10px !important;
+}
+
+.config-paths + .step-sub {
+  margin-top: 18px !important;
+}
+
+.password-notes div {
+  grid-template-columns: 60px minmax(0, 1fr);
+}
+
+.password-notes dd {
+  font-family: inherit;
 }
 
 .download-links dd {
@@ -1486,7 +1578,7 @@ nav a.cta-button:hover {
 
 
   .terminal-body {
-    min-height: 455px;
+    min-height: 470px;
     overflow-x: auto;
     padding: 26px 20px 30px;
     font-size: 0.7rem;
