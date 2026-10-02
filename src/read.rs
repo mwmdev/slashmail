@@ -5,7 +5,9 @@ use serde::Serialize;
 use std::collections::HashMap;
 
 use crate::connection::ImapSession;
-use crate::display::{sanitize_terminal_body, sanitize_terminal_field, MessageRow};
+use crate::display::{
+    sanitize_folder_name, sanitize_terminal_body, sanitize_terminal_field, MessageRow,
+};
 use crate::search;
 
 pub type MessageBodyMap = HashMap<(Option<String>, String, u32), Vec<u8>>;
@@ -59,7 +61,7 @@ pub fn fetch_message_bodies(
             let fetches = session.uid_fetch(chunk, "BODY.PEEK[]").with_context(|| {
                 format!(
                     "Failed to fetch messages from '{}'",
-                    sanitize_terminal_field(folder)
+                    sanitize_folder_name(folder)
                 )
             })?;
 
@@ -547,6 +549,8 @@ mod tests {
             answered: false,
             flagged: false,
             uid_validity: None,
+            gmail_msgid: None,
+            arrival: None,
         }
     }
 

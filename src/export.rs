@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use crate::attachment::{create_output_file, write_created_file};
 use crate::connection::ImapSession;
-use crate::display::{sanitize_terminal_field, MessageRow};
+use crate::display::{sanitize_folder_name, sanitize_terminal_field, MessageRow};
 use crate::search;
 
 /// Longest file name component accepted by common filesystems.
@@ -39,7 +39,7 @@ fn export_filename(folder: &str, uid: u32) -> Result<String> {
     if filename.len() > MAX_FILENAME_BYTES {
         bail!(
             "Export file name for UID {uid} in '{}' exceeds {MAX_FILENAME_BYTES} bytes",
-            sanitize_terminal_field(folder)
+            sanitize_folder_name(folder)
         );
     }
     Ok(filename)
@@ -299,7 +299,7 @@ pub fn export_messages(
             let fetches = session.uid_fetch(chunk, "BODY.PEEK[]").with_context(|| {
                 format!(
                     "Failed to fetch messages from '{}'",
-                    sanitize_terminal_field(folder)
+                    sanitize_folder_name(folder)
                 )
             })?;
 

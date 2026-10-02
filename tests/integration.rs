@@ -165,6 +165,7 @@ fn default_criteria(folder: &str) -> SearchCriteria {
         answered: false,
         draft: false,
         limit: None,
+        client_order: false,
     }
 }
 
@@ -819,8 +820,8 @@ fn search_empty_mailbox() {
     let user = unique_user();
     let mut session = imap_connect(&user);
 
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert!(results.is_empty(), "expected empty mailbox");
 
     session.logout().unwrap();
@@ -833,8 +834,8 @@ fn search_finds_seeded_email() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1);
     assert!(results[0].subject.contains("Hello World"));
@@ -961,7 +962,7 @@ fn search_by_subject() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.subject = Some("Report".to_string());
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 2);
 
@@ -978,7 +979,7 @@ fn search_by_from() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.from = Some("alice@localhost".to_string());
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1);
     assert!(results[0].from.contains("alice"));
@@ -996,7 +997,7 @@ fn search_by_to() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.to = Some(user_addr);
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1);
     assert!(results[0].subject.contains("For user"));
@@ -1015,7 +1016,7 @@ fn search_by_cc() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.cc = Some(user_email(&cc_user));
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1);
     assert!(results[0].subject.contains("CC test"));
@@ -1052,7 +1053,7 @@ fn search_by_seen_and_unseen() {
 
     let mut criteria = default_criteria("INBOX");
     criteria.unseen = true;
-    let unseen_results = search::search(&mut session, &criteria).unwrap();
+    let unseen_results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(
         unseen_results.len(),
         1,
@@ -1061,7 +1062,7 @@ fn search_by_seen_and_unseen() {
 
     let mut criteria = default_criteria("INBOX");
     criteria.seen = true;
-    let seen_results = search::search(&mut session, &criteria).unwrap();
+    let seen_results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(seen_results.len(), 1, "Only the seen message should match");
 
     session.logout().unwrap();
@@ -1078,7 +1079,7 @@ fn search_with_limit() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.limit = Some(2);
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 2);
 
@@ -1097,7 +1098,7 @@ fn search_by_larger_and_smaller() {
     let mut session = imap_connect(&user);
     let mut criteria = default_criteria("INBOX");
     criteria.larger = Some("5K".to_string());
-    let larger_results = search::search(&mut session, &criteria).unwrap();
+    let larger_results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(
         larger_results.len(),
         1,
@@ -1107,7 +1108,7 @@ fn search_by_larger_and_smaller() {
 
     let mut criteria = default_criteria("INBOX");
     criteria.smaller = Some("5K".to_string());
-    let smaller_results = search::search(&mut session, &criteria).unwrap();
+    let smaller_results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(
         smaller_results.len(),
         1,
@@ -1137,13 +1138,13 @@ fn search_by_date_range() {
     let today = format!("{year:04}-{month:02}-{day:02}");
     let mut criteria = default_criteria("INBOX");
     criteria.since = Some(today.clone());
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 1, "SINCE today should find today's message");
 
     // BEFORE today should find nothing (BEFORE is exclusive in IMAP)
     let mut criteria = default_criteria("INBOX");
     criteria.before = Some(today);
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(
         results.len(),
         0,
@@ -1153,7 +1154,7 @@ fn search_by_date_range() {
     // SINCE a far-future date should find nothing
     let mut criteria = default_criteria("INBOX");
     criteria.since = Some("2099-01-01".to_string());
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 0, "SINCE far future should find nothing");
 
     session.logout().unwrap();
@@ -1164,8 +1165,8 @@ fn search_missing_folder_errors() {
     let user = unique_user();
     let mut session = imap_connect(&user);
 
-    let criteria = default_criteria("DoesNotExist");
-    let result = search::search(&mut session, &criteria);
+    let mut criteria = default_criteria("DoesNotExist");
+    let result = search::search(&mut session, &mut criteria);
     assert!(result.is_err());
     let err = result.err().unwrap();
     assert!(err.to_string().contains("does not exist"));
@@ -1183,15 +1184,15 @@ fn delete_moves_to_trash() {
     let mut session = imap_connect(&user);
     session.create("Trash").unwrap();
 
-    let criteria = default_criteria("INBOX");
-    delete::delete(&mut session, &criteria, "Trash", true, false).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    delete::delete(&mut session, &mut criteria, "Trash", true, false).unwrap();
 
     // Verify INBOX is empty
-    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(inbox.len(), 0, "INBOX should be empty after delete");
 
     // Verify messages are in Trash
-    let trash = search::search(&mut session, &default_criteria("Trash")).unwrap();
+    let trash = search::search(&mut session, &mut default_criteria("Trash")).unwrap();
     assert_eq!(trash.len(), 2, "Trash should have 2 messages");
 
     session.logout().unwrap();
@@ -1206,11 +1207,11 @@ fn delete_dry_run() {
 
     let mut session = imap_connect(&user);
 
-    let criteria = default_criteria("INBOX");
-    delete::delete(&mut session, &criteria, "Trash", true, true).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    delete::delete(&mut session, &mut criteria, "Trash", true, true).unwrap();
 
     // Messages should still be in INBOX
-    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(
         inbox.len(),
         2,
@@ -1229,15 +1230,15 @@ fn move_to_folder() {
     let mut session = imap_connect(&user);
     session.create("Archive").unwrap();
 
-    let criteria = default_criteria("INBOX");
-    delete::search_and_move(&mut session, &criteria, "Archive", true, false).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    delete::search_and_move(&mut session, &mut criteria, "Archive", true, false).unwrap();
 
     // Verify INBOX is empty
-    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(inbox.len(), 0, "INBOX should be empty after move");
 
     // Verify message is in Archive
-    let archive = search::search(&mut session, &default_criteria("Archive")).unwrap();
+    let archive = search::search(&mut session, &mut default_criteria("Archive")).unwrap();
     assert_eq!(archive.len(), 1, "Archive should have 1 message");
 
     session.logout().unwrap();
@@ -1301,8 +1302,8 @@ fn export_creates_eml_files() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(messages.len(), 1);
 
     let temp_dir = std::env::temp_dir().join(format!("slashmail_export_{user}"));
@@ -1339,8 +1340,8 @@ fn export_multiple_folders_uid_collision() {
     session.create("Archive").unwrap();
 
     // Move one message to Archive
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     let archive_msg = results
         .iter()
         .find(|m| m.subject.contains("Archive export"))
@@ -1352,7 +1353,7 @@ fn export_multiple_folders_uid_collision() {
     // Search all folders to get messages from both INBOX and Archive
     let mut all_criteria = default_criteria("INBOX");
     all_criteria.all_folders = true;
-    let all_messages = search::search(&mut session, &all_criteria).unwrap();
+    let all_messages = search::search(&mut session, &mut all_criteria).unwrap();
     assert_eq!(all_messages.len(), 2);
 
     let temp_dir = std::env::temp_dir().join(format!("slashmail_multi_{user}"));
@@ -1391,9 +1392,15 @@ fn move_to_nonexistent_folder_fails() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
+    let mut criteria = default_criteria("INBOX");
 
-    let result = delete::search_and_move(&mut session, &criteria, "NonExistentFolder", true, false);
+    let result = delete::search_and_move(
+        &mut session,
+        &mut criteria,
+        "NonExistentFolder",
+        true,
+        false,
+    );
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -1402,7 +1409,7 @@ fn move_to_nonexistent_folder_fails() {
     );
 
     // Messages should still be in INBOX
-    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(inbox.len(), 1, "Message should still be in INBOX");
 
     session.logout().unwrap();
@@ -1415,27 +1422,27 @@ fn delete_to_nonexistent_trash_fails() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
+    let mut criteria = default_criteria("INBOX");
 
     // Don't create Trash folder — should fail
-    let result = delete::delete(&mut session, &criteria, "Trash", true, false);
+    let result = delete::delete(&mut session, &mut criteria, "Trash", true, false);
     assert!(result.is_err());
 
     // Messages should still be in INBOX
-    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(inbox.len(), 1, "Message should still be in INBOX");
 
     session.logout().unwrap();
 }
 
 #[test]
-fn ensure_folder_exists_returns_error_for_missing_folder() {
+fn resolve_folder_returns_error_for_missing_folder() {
     let user = unique_user();
     send_email(&user, "Folder check test", "body");
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let result = search::ensure_folder_exists(&mut session, "NoSuchFolder");
+    let result = search::resolve_folder(&mut session, "NoSuchFolder");
     assert!(result.is_err());
     let err_msg = format!("{}", result.unwrap_err());
     assert!(
@@ -1447,7 +1454,7 @@ fn ensure_folder_exists_returns_error_for_missing_folder() {
 }
 
 #[test]
-fn ensure_folder_exists_finds_created_folder() {
+fn resolve_folder_returns_the_listed_name() {
     let user = unique_user();
     send_email(&user, "Subfolder check test", "body");
     sleep_for_delivery();
@@ -1455,8 +1462,14 @@ fn ensure_folder_exists_finds_created_folder() {
     let mut session = imap_connect(&user);
     session.create("Archive").unwrap();
 
-    let result = search::ensure_folder_exists(&mut session, "Archive");
-    assert!(result.is_ok(), "Archive folder should exist");
+    assert_eq!(
+        search::resolve_folder(&mut session, "Archive").unwrap(),
+        "Archive"
+    );
+    assert_eq!(
+        search::resolve_folder(&mut session, "inbox").unwrap(),
+        "INBOX"
+    );
 
     session.logout().unwrap();
 }
@@ -1468,8 +1481,8 @@ fn search_nonexistent_folder_gives_helpful_error() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("DoesNotExist");
-    let result = search::search(&mut session, &criteria);
+    let mut criteria = default_criteria("DoesNotExist");
+    let result = search::search(&mut session, &mut criteria);
     assert!(result.is_err());
     let err_msg = format!("{}", result.err().unwrap());
     assert!(
@@ -1489,8 +1502,8 @@ fn mark_as_read() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 1);
 
     let uid = results[0].uid;
@@ -1618,8 +1631,8 @@ fn mark_as_flagged() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 1);
 
     let uid = results[0].uid;
@@ -1648,8 +1661,8 @@ fn mark_unread_removes_seen() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     let uid_set = results[0].uid.to_string();
 
     session.select("INBOX").unwrap();
@@ -1685,8 +1698,8 @@ fn search_all_folders_with_subject_filter() {
     session.create("Archive").unwrap();
 
     // Move "Report Q2" to Archive
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     let q2_msg = results
         .iter()
         .find(|m| m.subject.contains("Report Q2"))
@@ -1699,7 +1712,7 @@ fn search_all_folders_with_subject_filter() {
     let mut all_criteria = default_criteria("INBOX");
     all_criteria.all_folders = true;
     all_criteria.subject = Some("Report".to_string());
-    let results = search::search(&mut session, &all_criteria).unwrap();
+    let results = search::search(&mut session, &mut all_criteria).unwrap();
 
     assert_eq!(
         results.len(),
@@ -1727,8 +1740,8 @@ fn delete_all_folders() {
     session.create("Trash").unwrap();
 
     // Move one message to Archive
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     let archive_msg = results
         .iter()
         .find(|m| m.subject.contains("Archive delete"))
@@ -1740,16 +1753,16 @@ fn delete_all_folders() {
     // Delete with all_folders — should move messages from both INBOX and Archive to Trash
     let mut all_criteria = default_criteria("INBOX");
     all_criteria.all_folders = true;
-    delete::delete(&mut session, &all_criteria, "Trash", true, false).unwrap();
+    delete::delete(&mut session, &mut all_criteria, "Trash", true, false).unwrap();
 
     // Both INBOX and Archive should be empty
-    let inbox = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(inbox.len(), 0, "INBOX should be empty");
-    let archive = search::search(&mut session, &default_criteria("Archive")).unwrap();
+    let archive = search::search(&mut session, &mut default_criteria("Archive")).unwrap();
     assert_eq!(archive.len(), 0, "Archive should be empty");
 
     // Trash should have both messages
-    let trash = search::search(&mut session, &default_criteria("Trash")).unwrap();
+    let trash = search::search(&mut session, &mut default_criteria("Trash")).unwrap();
     assert_eq!(trash.len(), 2, "Trash should have 2 messages");
 
     session.logout().unwrap();
@@ -1762,8 +1775,8 @@ fn mark_combined_flags() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 1);
 
     let uid_set = results[0].uid.to_string();
@@ -1802,8 +1815,8 @@ fn search_all_folders() {
     session.create("Archive").unwrap();
 
     // Move one message to Archive
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 2);
 
     // Move the "To archive" message
@@ -1818,7 +1831,7 @@ fn search_all_folders() {
     // Search all folders
     let mut all_criteria = default_criteria("INBOX");
     all_criteria.all_folders = true;
-    let all_results = search::search(&mut session, &all_criteria).unwrap();
+    let all_results = search::search(&mut session, &mut all_criteria).unwrap();
 
     assert_eq!(all_results.len(), 2, "Should find messages across folders");
 
@@ -1849,8 +1862,8 @@ fn search_all_folders_skips_trash() {
     session.create("Trash").unwrap();
 
     // Move one message to Trash
-    let criteria = default_criteria("INBOX");
-    let results = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let results = search::search(&mut session, &mut criteria).unwrap();
     let trash_msg = results
         .iter()
         .find(|m| m.subject.contains("Trash me"))
@@ -1862,7 +1875,7 @@ fn search_all_folders_skips_trash() {
     // Search all folders — Trash should be excluded
     let mut all_criteria = default_criteria("INBOX");
     all_criteria.all_folders = true;
-    let all_results = search::search(&mut session, &all_criteria).unwrap();
+    let all_results = search::search(&mut session, &mut all_criteria).unwrap();
 
     assert_eq!(
         all_results.len(),
@@ -1889,7 +1902,7 @@ fn search_by_body() {
     let mut criteria = default_criteria("INBOX");
     criteria.body = Some("quick brown fox".into());
 
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].subject.contains("Body test A"));
 
@@ -1908,7 +1921,7 @@ fn search_by_text() {
     let mut criteria = default_criteria("INBOX");
     criteria.text = Some("xylophone".into());
 
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(results.len(), 1);
     assert!(results[0].subject.contains("Text test msg"));
 
@@ -1916,7 +1929,7 @@ fn search_by_text() {
     let mut criteria2 = default_criteria("INBOX");
     criteria2.text = Some("Text test msg".into());
 
-    let results2 = search::search(&mut session, &criteria2).unwrap();
+    let results2 = search::search(&mut session, &mut criteria2).unwrap();
     assert_eq!(results2.len(), 1);
 
     session.logout().unwrap();
@@ -1929,8 +1942,8 @@ fn export_skip_and_force_existing() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(messages.len(), 1);
 
     let tmp = tempfile::tempdir().unwrap();
@@ -1964,8 +1977,8 @@ fn read_displays_message_content() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&user);
-    let criteria = default_criteria("INBOX");
-    let messages = search::search(&mut session, &criteria).unwrap();
+    let mut criteria = default_criteria("INBOX");
+    let messages = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(messages.len(), 1);
 
     // read_messages prints to stdout — just verify it doesn't error
@@ -1985,7 +1998,7 @@ fn read_fetches_from_explicit_non_default_folder() {
     let mut session = imap_connect(&user);
     session.create("Archive").unwrap();
 
-    let inbox_results = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let inbox_results = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     let archive_msg = inbox_results
         .iter()
         .find(|m| m.subject.contains("Archive read fallback"))
@@ -1996,7 +2009,7 @@ fn read_fetches_from_explicit_non_default_folder() {
 
     let mut criteria = default_criteria("Archive");
     criteria.subject = Some("Archive read fallback".to_string());
-    let messages = search::search(&mut session, &criteria).unwrap();
+    let messages = search::search(&mut session, &mut criteria).unwrap();
     assert_eq!(messages.len(), 1);
     assert!(
         messages[0].folder.is_none(),
@@ -2033,14 +2046,14 @@ fn search_by_flagged() {
 
     let mut criteria = default_criteria("INBOX");
     criteria.flagged = true;
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1, "Only the flagged message should match");
 
     // Unflagged should find the other one
     let mut criteria2 = default_criteria("INBOX");
     criteria2.unflagged = true;
-    let results2 = search::search(&mut session, &criteria2).unwrap();
+    let results2 = search::search(&mut session, &mut criteria2).unwrap();
 
     assert_eq!(results2.len(), 1, "Only the unflagged message should match");
 
@@ -2065,7 +2078,7 @@ fn search_by_answered() {
 
     let mut criteria = default_criteria("INBOX");
     criteria.answered = true;
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1, "Only the answered message should match");
 
@@ -2090,7 +2103,7 @@ fn search_by_draft() {
 
     let mut criteria = default_criteria("INBOX");
     criteria.draft = true;
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(results.len(), 1, "Only the draft message should match");
 
@@ -2112,7 +2125,7 @@ fn search_size_range() {
     let mut criteria = default_criteria("INBOX");
     criteria.larger = Some("1K".to_string());
     criteria.smaller = Some("10K".to_string());
-    let results = search::search(&mut session, &criteria).unwrap();
+    let results = search::search(&mut session, &mut criteria).unwrap();
 
     assert_eq!(
         results.len(),
@@ -2333,7 +2346,7 @@ fn cli_sanitizes_received_attachment_paths_without_mutating_source() {
 fn uid_with_subject(session: &mut ImapSession, subject: &str) -> u32 {
     let mut criteria = default_criteria("INBOX");
     criteria.subject = Some(subject.to_string());
-    let messages = search::search(session, &criteria).unwrap();
+    let messages = search::search(session, &mut criteria).unwrap();
     assert_eq!(messages.len(), 1, "expected one message titled {subject}");
     messages[0].uid
 }
@@ -2436,7 +2449,7 @@ fn cli_read_uid_json_returns_exact_message_without_marking_seen() {
     sleep_for_delivery();
 
     let mut session = imap_connect(&owner);
-    let messages = search::search(&mut session, &default_criteria("INBOX")).unwrap();
+    let messages = search::search(&mut session, &mut default_criteria("INBOX")).unwrap();
     assert_eq!(messages.len(), 2);
     let uid = messages.iter().map(|message| message.uid).min().unwrap();
     let missing_uid = messages.iter().map(|message| message.uid).max().unwrap() + 100;
@@ -2549,7 +2562,7 @@ fn cli_draft_and_reply_json_receipts_identify_the_saved_drafts() {
 }
 
 fn subjects_in(session: &mut ImapSession, folder: &str) -> Vec<String> {
-    let mut subjects: Vec<String> = search::search(session, &default_criteria(folder))
+    let mut subjects: Vec<String> = search::search(session, &mut default_criteria(folder))
         .unwrap()
         .into_iter()
         .map(|message| message.subject)

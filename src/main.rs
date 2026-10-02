@@ -83,7 +83,7 @@ enum Commands {
     Export(ExportArgs),
     /// Search + set/unset flags on matching messages
     Mark(MarkArgs),
-    /// Count matching messages (no FETCH)
+    /// Count matching messages (no header or body fetch)
     Count(CountArgs),
     /// Show mailbox quota usage
     Quota,
@@ -203,7 +203,7 @@ struct FilterArgs {
     #[arg(short, long, conflicts_with = "all_folders")]
     folder: Option<String>,
 
-    /// Search across all folders (excludes Trash, Junk/Spam, and All Mail)
+    /// Search across all folders (excludes Trash, Junk/Spam, All Mail, and folders inside them)
     #[arg(long)]
     all_folders: bool,
 
@@ -440,6 +440,7 @@ impl FilterArgs {
             answered: self.answered,
             draft: self.draft,
             limit,
+            client_order: false,
         }
     }
 }
@@ -718,15 +719,35 @@ fn resolve_drafts_folder(
     )
 }
 
+/// The folder `count`, `reply`, and `attachments` open: the listed name when
+/// the server lists the requested one (in either form), else the name as
+/// typed, since servers may open mailboxes they do not list or match names
+/// case-insensitively. Returns the name to send and its terminal form.
+fn source_folder(
+    session: &mut connection::ImapSession,
+    requested: &str,
+) -> Result<(String, String)> {
+    Ok(match search::lookup_folder(session, requested)? {
+        Some(listed) => {
+            let shown = display::sanitize_folder_name(&listed);
+            (listed, shown)
+        }
+        None => (
+            requested.to_string(),
+            display::sanitize_terminal_field(requested),
+        ),
+    })
+}
+
+/// The source message's raw bytes and its folder's terminal form.
 fn fetch_source_message(
     session: &mut connection::ImapSession,
     folder: &str,
     uid: u32,
-) -> Result<Vec<u8>> {
-    search::validate_folder_name(folder)?;
-    let safe_folder = display::sanitize_terminal_field(folder);
+) -> Result<(String, Vec<u8>)> {
+    let (folder, safe_folder) = source_folder(session, folder)?;
     session
-        .examine(folder)
+        .examine(&folder)
         .map_err(|_| anyhow::anyhow!("Failed to examine source folder '{safe_folder}'"))?;
     let fetches = session
         .uid_fetch(&uid.to_string(), "BODY.PEEK[]")
@@ -740,7 +761,7 @@ fn fetch_source_message(
             body: fetch.body().map(<[u8]>::to_vec),
         })
         .collect();
-    draft::require_exact_source(messages, uid)
+    Ok((safe_folder, draft::require_exact_source(messages, uid)?))
 }
 
 fn draft_receipt(
@@ -866,7 +887,7 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
     let mut session = factory.connect()?;
     let folder = resolve_drafts_folder(&mut session, account, args.drafts_folder.as_deref())?;
     let source_folder = args.folder.as_deref().unwrap_or(&account.default_folder);
-    let source = fetch_source_message(&mut session, source_folder, args.uid)?;
+    let (_, source) = fetch_source_message(&mut session, source_folder, args.uid)?;
     let composed = draft::compose_reply_draft_with_attachments(
         draft::ReplyDraftInput {
             sender,
@@ -892,14 +913,13 @@ fn cmd_attachments(
     default_folder: &str,
 ) -> Result<()> {
     let folder = args.folder.as_deref().unwrap_or(default_folder);
-    let safe_folder = display::sanitize_terminal_field(folder);
     let sp = spinner(&format!("Inspecting attachments for UID {}...", args.uid));
-    let inspected = fetch_source_message(session, folder, args.uid).and_then(|raw| {
+    let inspected = fetch_source_message(session, folder, args.uid).and_then(|(shown, raw)| {
         attachment::attachments_from_message(&raw, if args.save { &args.part } else { &[] })
             .with_context(|| {
                 format!(
                     "Failed to inspect attachments for UID {} in '{}'",
-                    args.uid, safe_folder
+                    args.uid, shown
                 )
             })
     });
@@ -974,7 +994,7 @@ fn tag_messages(messages: &mut [display::MessageRow], account: &config::Resolved
 }
 
 fn sort_and_limit_messages(messages: &mut Vec<display::MessageRow>, limit: Option<usize>) {
-    messages.sort_by_key(|message| std::cmp::Reverse(message.timestamp));
+    messages.sort_by_key(|message| std::cmp::Reverse(message.sort_time()));
     if let Some(n) = limit {
         messages.truncate(n);
     }
@@ -990,8 +1010,9 @@ fn search_accounts(
     for account in accounts {
         let mut messages = with_account_session(account, |session| {
             let sp = spinner(&format!("Searching {}...", safe_label(account)));
-            let criteria = filter.to_criteria(limit, &account.default_folder);
-            let result = search::search(session, &criteria);
+            let mut criteria = filter.to_criteria(limit, &account.default_folder);
+            criteria.client_order = accounts.len() > 1;
+            let result = search::search(session, &mut criteria);
             sp.finish_and_clear();
             result
         })?;
@@ -1149,8 +1170,10 @@ fn fetch_status_rows(
 ) -> Result<Vec<StatusRow>> {
     let folders = session.list_all().context("Failed to list folders")?;
 
+    // Containers such as Gmail's `[Gmail]` hold no messages and refuse STATUS.
     Ok(folders
         .into_iter()
+        .filter(|mailbox| mailbox.is_selectable())
         .map(|mailbox| {
             // A failed or malformed STATUS leaves counts unknown rather than zero.
             let counts = session.status_counts(&mailbox.name).unwrap_or_default();
@@ -1193,7 +1216,7 @@ fn display_status_rows(rows: &[StatusRow], include_account: bool) {
                 row.account.as_deref().unwrap_or(""),
             )));
         }
-        cells.push(Cell::new(display::sanitize_terminal_field(&row.folder)));
+        cells.push(Cell::new(display::sanitize_folder_name(&row.folder)));
         cells.push(status_cell(row.messages));
         cells.push(status_cell(row.unseen));
         cells.push(status_cell(row.recent));
@@ -1242,9 +1265,9 @@ fn cmd_export(
     default_folder: &str,
     account_name: Option<&str>,
 ) -> Result<()> {
-    let criteria = args.filter.to_criteria(args.limit, default_folder);
+    let mut criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
-    let mut messages = search::search(session, &criteria)?;
+    let mut messages = search::search(session, &mut criteria)?;
     sp.finish_and_clear();
     if let Some(account) = account_name {
         for msg in &mut messages {
@@ -1351,9 +1374,9 @@ fn cmd_mark(
 ) -> Result<()> {
     validate_mark_flags(args.read, args.unread, args.set_flagged, args.clear_flagged)?;
 
-    let criteria = args.filter.to_criteria(args.limit, default_folder);
+    let mut criteria = args.filter.to_criteria(args.limit, default_folder);
     let sp = spinner("Searching...");
-    let mut messages = search::search(session, &criteria)?;
+    let mut messages = search::search(session, &mut criteria)?;
     sp.finish_and_clear();
     if let Some(account) = account_name {
         for msg in &mut messages {
@@ -1411,7 +1434,7 @@ fn cmd_mark(
                 };
                 format!(
                     "Failed to store flags in '{}' ({total} already updated{partial})",
-                    display::sanitize_terminal_field(folder)
+                    display::sanitize_folder_name(folder)
                 )
             };
             search::select_verified(session, folder, *uid_validity)
@@ -1447,6 +1470,32 @@ struct CountRow {
     account: Option<String>,
     folder: Option<String>,
     count: usize,
+    /// Messages not already counted in an earlier folder of the account.
+    /// Differs from `count` only on Gmail, which lists a message once per
+    /// label. Totals add these.
+    new: usize,
+}
+
+/// How many of `uids` (matches in the selected Gmail folder) have a Gmail
+/// message ID not in `seen`, which collects them. UIDs without an ID count
+/// as new.
+fn count_new_gmail_messages(
+    session: &mut connection::ImapSession,
+    uids: &std::collections::HashSet<u32>,
+    seen: &mut std::collections::HashSet<u64>,
+) -> Result<usize> {
+    let sorted: Vec<u32> = uids.iter().copied().collect();
+    let mut identified = 0;
+    let mut new = 0;
+    for chunk in search::build_uid_set(&sorted) {
+        for (uid, id) in session.gmail_message_ids(&chunk)? {
+            if uids.contains(&uid) {
+                identified += 1;
+                new += usize::from(seen.insert(id));
+            }
+        }
+    }
+    Ok(uids.len() - identified + new)
 }
 
 fn count_rows_for_account(
@@ -1463,9 +1512,10 @@ fn count_rows_for_account(
         let folder_names = search::searchable_folders(session)?;
 
         let mut results = Vec::new();
+        let mut seen_gmail_ids = std::collections::HashSet::new();
 
         for folder in &folder_names {
-            let safe_folder = display::sanitize_terminal_field(folder);
+            let safe_folder = display::sanitize_folder_name(folder);
             if let Err(e) = search::validate_folder_name(folder) {
                 eprintln!("Warning: skipping folder '{safe_folder}': {e}");
                 continue;
@@ -1481,10 +1531,23 @@ fn count_rows_for_account(
                 Ok(uids) => {
                     let count = uids.len();
                     if count > 0 {
+                        let new = if session.has_capability("X-GM-EXT-1") {
+                            count_new_gmail_messages(session, &uids, &mut seen_gmail_ids)
+                                .unwrap_or_else(|e| {
+                                    eprintln!(
+                                        "Warning: could not identify Gmail label duplicates in '{safe_folder}': {}",
+                                        display::sanitize_terminal_field(&format!("{e:#}"))
+                                    );
+                                    count
+                                })
+                        } else {
+                            count
+                        };
                         results.push(CountRow {
                             account: account.name.clone(),
                             folder: Some(folder.clone()),
                             count,
+                            new,
                         });
                     }
                 }
@@ -1499,19 +1562,17 @@ fn count_rows_for_account(
 
         Ok(results)
     } else {
-        search::validate_folder_name(&criteria.folder)?;
-        session.examine(&criteria.folder).with_context(|| {
-            format!(
-                "Failed to examine '{}'",
-                display::sanitize_terminal_field(&criteria.folder)
-            )
-        })?;
+        let (folder, safe_folder) = source_folder(session, &criteria.folder)?;
+        session
+            .examine(&folder)
+            .with_context(|| format!("Failed to examine '{safe_folder}'"))?;
 
         let uids = session.uid_search(&query).context("IMAP SEARCH failed")?;
         Ok(vec![CountRow {
             account: account.name.clone(),
-            folder: Some(criteria.folder),
+            folder: Some(folder),
             count: uids.len(),
+            new: uids.len(),
         }])
     }
 }
@@ -1522,7 +1583,7 @@ fn display_count_json(
     all_folders: bool,
     include_account: bool,
 ) {
-    let total: usize = rows.iter().map(|row| row.count).sum();
+    let total: usize = rows.iter().map(|row| row.new).sum();
 
     if !include_account {
         if all_folders {
@@ -1569,7 +1630,7 @@ fn display_count_json(
                         })
                     })
                     .collect();
-                let account_total: usize = account_rows.iter().map(|row| row.count).sum();
+                let account_total: usize = account_rows.iter().map(|row| row.new).sum();
                 serde_json::json!({
                     "account": account.label(),
                     "folders": folders,
@@ -1601,7 +1662,7 @@ fn display_count_json(
 }
 
 fn display_count_text(rows: &[CountRow], all_folders: bool, include_account: bool) {
-    let total: usize = rows.iter().map(|row| row.count).sum();
+    let total: usize = rows.iter().map(|row| row.new).sum();
 
     if !include_account {
         if rows.is_empty() {
@@ -1611,7 +1672,7 @@ fn display_count_text(rows: &[CountRow], all_folders: bool, include_account: boo
                 println!(
                     "{} message(s) in {}",
                     row.count,
-                    display::sanitize_terminal_field(row.folder.as_deref().unwrap_or(""))
+                    display::sanitize_folder_name(row.folder.as_deref().unwrap_or(""))
                 );
             }
             if rows.len() > 1 {
@@ -1621,7 +1682,7 @@ fn display_count_text(rows: &[CountRow], all_folders: bool, include_account: boo
             println!(
                 "{} message(s) in {}",
                 row.count,
-                display::sanitize_terminal_field(row.folder.as_deref().unwrap_or(""))
+                display::sanitize_folder_name(row.folder.as_deref().unwrap_or(""))
             );
         }
         return;
@@ -1645,7 +1706,7 @@ fn display_count_text(rows: &[CountRow], all_folders: bool, include_account: boo
             row.account.as_deref().unwrap_or(""),
         ))];
         if all_folders {
-            cells.push(Cell::new(display::sanitize_terminal_field(
+            cells.push(Cell::new(display::sanitize_folder_name(
                 row.folder.as_deref().unwrap_or(""),
             )));
         }
@@ -1707,16 +1768,17 @@ fn cmd_read_accounts(accounts: &[config::ResolvedAccount], args: &ReadArgs) -> R
         let (mut account_messages, fetched, folder) = with_account_session(account, |session| {
             let mut criteria = args.filter.to_criteria(limit, &account.default_folder);
             criteria.uid = args.uid;
+            criteria.client_order = accounts.len() > 1;
 
             let sp = spinner(&format!("Searching {}...", safe_label(account)));
-            let result = search::search(session, &criteria);
+            let result = search::search(session, &mut criteria);
             sp.finish_and_clear();
             let mut account_messages = result?;
             if let Some(uid) = args.uid {
                 if account_messages.is_empty() {
                     bail!(
                         "No message with UID {uid} matches in '{}'",
-                        display::sanitize_terminal_field(&criteria.folder)
+                        display::sanitize_folder_name(&criteria.folder)
                     );
                 }
             }
@@ -1737,7 +1799,9 @@ fn cmd_read_accounts(accounts: &[config::ResolvedAccount], args: &ReadArgs) -> R
         messages.append(&mut account_messages);
     }
 
-    sort_and_limit_messages(&mut messages, limit);
+    if accounts.len() > 1 {
+        sort_and_limit_messages(&mut messages, limit);
+    }
     if args.json {
         println!(
             "{}",
@@ -1832,14 +1896,14 @@ fn run() -> Result<()> {
         Commands::Delete(args) => {
             let account = &accounts[0];
             with_account_session(account, |session| {
-                let criteria = args.filter.to_criteria(args.limit, &account.default_folder);
+                let mut criteria = args.filter.to_criteria(args.limit, &account.default_folder);
                 let trash = args
                     .trash_folder
                     .as_deref()
                     .unwrap_or(&account.trash_folder);
                 delete::delete_with_account(
                     session,
-                    &criteria,
+                    &mut criteria,
                     trash,
                     args.yes,
                     args.dry_run,
@@ -1850,10 +1914,10 @@ fn run() -> Result<()> {
         Commands::Move(args) => {
             let account = &accounts[0];
             with_account_session(account, |session| {
-                let criteria = args.filter.to_criteria(args.limit, &account.default_folder);
+                let mut criteria = args.filter.to_criteria(args.limit, &account.default_folder);
                 delete::search_and_move_with_account(
                     session,
-                    &criteria,
+                    &mut criteria,
                     &args.dest,
                     args.yes,
                     args.dry_run,

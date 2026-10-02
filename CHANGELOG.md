@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Non-ASCII search terms also work on servers that advertise `LITERAL-` instead of `LITERAL+`, such as Gmail, for terms up to 4096 bytes
+
+### Changed
+
+- Non-ASCII folder names are shown decoded (`[Gmail]/Messages envoyés` instead of `[Gmail]/Messages envoy&AOk-s`), and folder options and config settings accept either form; `--json` output and `export` file names use the server's listed name (so `--folder inbox` exports `INBOX_<uid>.eml`)
+- `--limit` fetches headers only for recent matches when they suffice instead of for every match, on servers without SORT, such as Gmail, and in each folder of `--all-folders` on every server (`search --limit 5` on a 7,480-message Gmail INBOX: 22.9 s to 1.6 s)
+- On Proton Mail Bridge, `--all-folders` skips the label views (`Labels/...` and `Starred`), so a labelled message is listed and counted once, from its regular folder (on a 150,000-message account, `search --all-folders --limit 5` went from 33.9 s to 3.1 s and the `count --all-folders` total from 305,131 to 151,285)
+
+### Fixed
+
+- `--all-folders` and `status` skip containers that cannot be opened (`\Noselect`, such as Gmail's `[Gmail]`) instead of warning about or listing them
+- On Gmail, `--all-folders` lists a message once even when it has several labels (the INBOX copy if there is one), and actions apply to that copy; `count --all-folders` totals count it once
+- `--all-folders` also skips folders inside Trash, Spam/Junk, and All Mail (such as `[Gmail]/Trash/Old`)
+- When slashmail orders messages itself (servers without SORT, `--all-folders`, `--all-accounts`), a Date header more than a day after a message arrived counts as arrival plus one day, so a wrong or forged future date no longer pins a message to the top or pushes newer messages out of a `--limit`
+
 ## [0.8.0] - 2026-09-28
 
 ### Added

@@ -21,6 +21,30 @@ pub struct MessageRow {
     /// UID actions refuse to run if the mailbox identity has changed.
     #[serde(skip)]
     pub uid_validity: Option<u32>,
+    /// Gmail's `X-GM-MSGID`, fetched for multi-folder results so a message
+    /// listed under several labels is shown once. Internal only.
+    #[serde(skip)]
+    pub gmail_msgid: Option<u64>,
+    /// INTERNALDATE (arrival) as Unix seconds. Internal only.
+    #[serde(skip)]
+    pub arrival: Option<i64>,
+}
+
+/// How far a Date header may run ahead of arrival before it is capped.
+pub const ARRIVAL_SLACK_SECS: i64 = 86_400;
+
+impl MessageRow {
+    /// The time messages are ordered by when slashmail sorts them: the Date
+    /// header, but never more than a day after the message arrived, so a
+    /// wrong or forged future date cannot pin a message to the top (and
+    /// date-narrowed searches stay exact on servers that filter by
+    /// arrival). An undated message sorts last.
+    pub fn sort_time(&self) -> i64 {
+        match self.arrival {
+            Some(arrival) => self.timestamp.min(arrival + ARRIVAL_SLACK_SECS),
+            None => self.timestamp,
+        }
+    }
 }
 
 pub fn format_size(bytes: u64) -> String {
@@ -39,6 +63,12 @@ pub fn format_size(bytes: u64) -> String {
 /// that could make two different names look identical.
 pub fn sanitize_terminal_field(value: &str) -> String {
     sanitize_terminal(value, false)
+}
+
+/// A mailbox name for the terminal: modified UTF-7 decoded, then sanitized
+/// like any other untrusted field.
+pub fn sanitize_folder_name(name: &str) -> String {
+    sanitize_terminal_field(&crate::utf7::display(name))
 }
 
 /// Like [`sanitize_terminal_field`], but keeps multi-line structure: LF and
@@ -77,6 +107,41 @@ const CANCEL_TAG: char = '\u{e007f}';
 
 fn is_tag_character(character: char) -> bool {
     matches!(character, '\u{e0000}'..='\u{e007f}')
+}
+
+/// Characters that show as nothing or as blank space in a terminal field:
+/// whitespace, controls, the sanitizer's invisible and bidi formatting
+/// characters, every Unicode Default_Ignorable_Code_Point (joiners,
+/// variation selectors, Hangul fillers, tags, ...), and the blank Braille
+/// pattern.
+pub(crate) fn renders_blank(character: char) -> bool {
+    character.is_whitespace()
+        || character.is_control()
+        || is_invisible_character(character)
+        || is_unsafe_format_character(character)
+        || matches!(
+            character,
+            '\u{00ad}'
+                | '\u{034f}'
+                | '\u{061c}'
+                | '\u{115f}'
+                | '\u{1160}'
+                | '\u{17b4}'
+                | '\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{202a}'..='\u{202e}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{2800}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fff8}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e0fff}'
+        )
 }
 
 fn sanitize_terminal(value: &str, multiline: bool) -> String {
@@ -241,7 +306,7 @@ pub fn display_messages(messages: &[MessageRow]) {
             )));
         }
         if has_folder {
-            row.push(Cell::new(sanitize_terminal_field(
+            row.push(Cell::new(sanitize_folder_name(
                 msg.folder.as_deref().unwrap_or(""),
             )));
         }
@@ -435,6 +500,8 @@ mod tests {
             answered: false,
             flagged: false,
             uid_validity: None,
+            gmail_msgid: None,
+            arrival: None,
         }
     }
 
