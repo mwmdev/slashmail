@@ -60,7 +60,7 @@ Commands:
   move     Search + move matching messages to a folder
   export   Search + export matching messages as .eml files
   mark     Search + set/unset flags on matching messages
-  count    Count matching messages (no FETCH)
+  count    Count matching messages (no header or body fetch)
   quota    Show mailbox quota usage
   status   Show per-folder message statistics
 ```
@@ -266,7 +266,7 @@ Search, read, count, and bulk message commands share these filter options:
 
 ```
 -f, --folder <FOLDER>    Folder to search [default: INBOX]
-    --all-folders        Search across all folders (excludes Trash, Junk/Spam, All Mail)
+    --all-folders        Search across all folders (excludes Trash, Junk/Spam, All Mail, and folders inside them)
     --subject <TEXT>     Subject contains
     --from <TEXT>        From address contains
     --to <TEXT>          To address contains
@@ -288,7 +288,13 @@ Search, read, count, and bulk message commands share these filter options:
 
 All filter criteria are AND'd together. Omitting all criteria matches all messages. Text filters (`--subject`, `--from`, `--to`, `--cc`, `--body`, `--text`) must not be empty, so an unset shell variable cannot turn a filter into "match everything". `--folder` and `--all-folders` cannot be combined.
 
-`--all-folders` skips mailboxes the server marks `\All`, `\Trash`, or `\Junk` (for example `Deleted Items` and `Junk Email`), plus folders named `Trash`, `Spam`, `Junk`, or `All Mail` for servers without those markers. `delete` and `move` also never search their destination folder, and naming the destination as the only source folder is an error.
+`--all-folders` skips mailboxes the server marks `\All`, `\Trash`, or `\Junk` (for example `Deleted Items` and `Junk Email`), plus folders named `Trash`, `Spam`, `Junk`, or `All Mail` for servers without those markers, and every folder inside one of those (such as `Deleted Items/2024` or `[Gmail]/Trash/Old`). It also skips containers that cannot be opened (`\Noselect`, such as Gmail's `[Gmail]`) but still searches the folders inside them. `delete` and `move` also never search their destination folder, and naming the destination as the only source folder is an error.
+
+On Gmail, where every label is a folder, `--all-folders` lists a message once even when it has several labels: the INBOX copy if there is one, otherwise the copy in the first folder listed. `read`, `export`, `mark`, `move`, and `delete` act on that copy. `count --all-folders` still shows each folder's own count, but its total counts each message once.
+
+On Proton Mail Bridge, every message sits in exactly one regular folder (INBOX, Archive, Sent, `Folders/...`), and its `Labels/...` folders and `Starred` are views of those messages. `--all-folders` skips those views there, so each message is listed and counted once, from its regular folder.
+
+Servers list non-ASCII folder names in IMAP's modified UTF-7 (`[Gmail]/Messages envoy&AOk-s`). The terminal shows them decoded (`[Gmail]/Messages envoyés`), and every folder option and config setting accepts either form. `--json` output keeps the server's form.
 
 ### Action options
 
@@ -305,11 +311,11 @@ Commands that modify messages (`delete`, `move`, `mark`) support:
 
 `delete` and `move` require the server to advertise `MOVE` or `UIDPLUS`. Without `MOVE`, messages are copied, flagged `\Deleted`, and removed with `UID EXPUNGE` of exactly those UIDs; other messages already flagged `\Deleted` are never expunged. This fallback is not atomic: if a step fails, slashmail stops and reports it without retrying, including how many messages were already moved or updated. Every mutating command and `export`/`read` refuse to act if the folder's `UIDVALIDITY` changed since the search. Immediately before `delete`, `move`, and `mark` act, slashmail asks the server which searched messages still exist; their receipts count only those and report any another client removed in the meantime.
 
-`export` supports `--yes`, `--force` (replace existing files), and `-o, --output-dir`. Files are named `<folder>_<uid>.eml`, where the folder name is percent-encoded: ASCII letters, digits, and `-` are kept and every other byte becomes `%XX` (so on Linux and macOS `Work/Projects` is `Work%2FProjects_1.eml` and `Work_Projects` is `Work%5FProjects_1.eml`). On Windows, lowercase letters are also encoded so folders differing only by case stay distinct (`Work/P` is `W%6F%72%6B%2FP_1.eml`). Without `--force`, an existing file is skipped only when it already holds the same message (identical bytes or the same Message-ID). UIDs restart when a mailbox is recreated or migrated, so an existing file holding a different message is left unchanged and reported as an error after the other messages are exported; use `--force` or a new output directory. `--force` replaces only a regular file or symlink entry and never follows symlinks. New exports and saved attachments are created owner-only (`0600`) on Unix.
+`export` supports `--yes`, `--force` (replace existing files), and `-o, --output-dir`. Files are named `<folder>_<uid>.eml`, where `<folder>` is the server's listed name (`INBOX` even for `--folder inbox`, and non-ASCII names in their encoded form), percent-encoded: ASCII letters, digits, and `-` are kept and every other byte becomes `%XX` (so on Linux and macOS `Work/Projects` is `Work%2FProjects_1.eml` and `Work_Projects` is `Work%5FProjects_1.eml`). On Windows, lowercase letters are also encoded so folders differing only by case stay distinct (`Work/P` is `W%6F%72%6B%2FP_1.eml`). Without `--force`, an existing file is skipped only when it already holds the same message (identical bytes or the same Message-ID). UIDs restart when a mailbox is recreated or migrated, so an existing file holding a different message is left unchanged and reported as an error after the other messages are exported; use `--force` or a new output directory. `--force` replaces only a regular file or symlink entry and never follows symlinks. New exports and saved attachments are created owner-only (`0600`) on Unix.
 
 `mark` takes one or more actions: `--read`, `--unread`, `--set-flagged`, `--clear-flagged`.
 
-Search terms containing non-ASCII text are sent as UTF-8 literals and require the server to advertise `LITERAL+`; otherwise the search fails before any mailbox is searched.
+Search terms containing non-ASCII text are sent as UTF-8 literals and require the server to advertise `LITERAL+`, or `LITERAL-` (as Gmail does) for terms up to 4096 bytes; otherwise the search fails before any mailbox is searched. Proton Mail Bridge advertises neither, so non-ASCII search fails there. Bridge also matches `--subject` and `--text` against the raw message as stored, so words inside an encoded subject (common when it has non-ASCII characters, often base64) may not match, accented or not. To find such messages there, narrow with other filters (`--from`, `--since`) and check the decoded `subject` in `search --json`.
 
 ## Examples
 
@@ -376,7 +382,7 @@ slashmail mark -u user@example.com --from "notifications" --read
 # Flag important messages
 slashmail mark -u user@example.com --subject "urgent" --set-flagged
 
-# Count matching messages (fast, no FETCH)
+# Count matching messages (fast, no header or body fetch)
 slashmail count -u user@example.com --from "newsletter"
 
 # Show folder statistics
@@ -455,17 +461,19 @@ Destructive operations always dry-run first and ask for confirmation.
 
 ## Tested with
 
-- Gmail (via `--tls --host imap.gmail.com`)
-- Fastmail (via `--tls --host imap.fastmail.com`)
-- Dovecot
-- Any standard IMAP4rev1 server
+- Gmail (`--tls --host imap.gmail.com`, with an app password)
+- Proton Mail Bridge 3.23 (`127.0.0.1:1143`, read-only checks)
+- Dovecot 2.3
+- GreenMail (automated test suite)
+
+Other IMAP4rev1 servers should work. `delete` and `move` need `MOVE` or `UIDPLUS`, and non-ASCII search needs `LITERAL+` or `LITERAL-`.
 
 ## How it works
 
 - All filtering runs server-side via IMAP SEARCH
-- Uses IMAP SORT extension (RFC 5256) when available; falls back to client-side sort
-- With SORT, `--limit` truncates results before fetching (fewer bytes over the wire)
-- `search`, `delete`, `move`, `mark`, `count` only fetch headers and size -- never full messages
+- Uses IMAP SORT extension (RFC 5256) when available for a single folder. Otherwise, and for every folder of `--all-folders` and every account of `--all-accounts`, slashmail orders by the Date header, but never later than one day after a message arrived, so a wrong or forged future date cannot keep a message at the top
+- `--limit` keeps header fetches small. With SORT, a single-folder search is truncated before fetching. Otherwise (no SORT, as on Gmail and Proton Bridge, and each folder or account being merged), a large search is first narrowed to recently arrived messages with `SINCE`, and every match is fetched only when those hold too few. The result is the same as fetching everything
+- `search`, `delete`, `move`, `mark` only fetch headers and size -- never full messages; `count` fetches neither (only message IDs with `--all-folders` on Gmail)
 - `export` fetches full message bodies via `BODY.PEEK[]`
 - Uses `BODY.PEEK` to avoid marking messages as read, and opens folders read-only (`EXAMINE`) for `search`, `read`, `count`, `export`, and `--dry-run`, so they do not clear the `\Recent` flag
 - UID sets are compressed into ranges and chunked to stay within IMAP command length limits
@@ -497,7 +505,7 @@ All errors print to stderr. Combine `--yes` with cron or scripts for unattended 
 ### Folder not found
 
 - Run `slashmail status` to list all available folders and their names
-- Folder names are case-sensitive on most IMAP servers
+- `search`, `read`, `export`, `mark`, `move`, and `delete` need a name `slashmail status` lists, decoded as shown or as the server sends it (INBOX in any letter case). `count`, `reply`, and `attachments` also try a name exactly as typed, for mailboxes a server opens but does not list
 - Gmail uses `[Gmail]/Trash`, `[Gmail]/All Mail`, etc. — use `--trash-folder` with `delete` if needed
 - Exchange/Outlook uses `Deleted Items` instead of `Trash`
 

@@ -33,7 +33,7 @@ Optional `sender` and `drafts_folder` values can be set at the top level or per 
 | Flag | Description |
 |------|-------------|
 | `-f, --folder FOLDER` | Target folder (default: INBOX); cannot be combined with `--all-folders` |
-| `--all-folders` | Search all folders (excludes Trash, Junk/Spam, All Mail, and the move/delete destination) |
+| `--all-folders` | Search all folders (excludes Trash, Junk/Spam, All Mail and folders inside them, and the move/delete destination; on Proton Bridge also `Labels/...` and `Starred`; on Gmail each message is one row, from INBOX when it is there) |
 | `--subject TEXT` | Filter by subject |
 | `--from TEXT` | Filter by sender |
 | `--to TEXT` | Filter by recipient |
@@ -143,7 +143,10 @@ With `--json`, the receipt is one object with `account`, `folder`, `uid`, `messa
 - Never pass an empty text filter (for example an unset variable as `--from`); slashmail rejects it rather than matching every message.
 - If `export` reports existing files that hold a different message, do not add `--force` without the user's approval; suggest a new output directory instead.
 - If an action on searched messages fails because the folder's UIDVALIDITY changed, the mailbox was rebuilt since the search: run the search again and act on the new UIDs. Never reuse the old ones.
-- `delete` and `move` require server support for `MOVE` or `UIDPLUS` and fail before changing anything otherwise. Non-ASCII search terms require `LITERAL+`; without it the search fails rather than matching nothing. Report these failures instead of working around them.
+- `delete` and `move` require server support for `MOVE` or `UIDPLUS` and fail before changing anything otherwise. Non-ASCII search terms require `LITERAL+`, or `LITERAL-` for terms up to 4096 bytes; without it the search fails rather than matching nothing. Report these failures instead of working around them.
+- `--json` `folder` values are the server's names (non-ASCII names in modified UTF-7, such as `[Gmail]/Messages envoy&AOk-s`). Pass them back unchanged; folder options also accept the decoded name the terminal shows.
+- With `--all-folders`, a Gmail message with several labels is one row, from INBOX when it is there, and commands act on that copy. Gmail keeps flags per message, so `mark` changes it in every label. On Proton Bridge, label folders are skipped: to work with a label, name it with `--folder` (for example `--folder "Labels/Clients"`).
+- On Proton Bridge, server search cannot see words inside an encoded subject (common when it has non-ASCII characters): `--subject` and `--text` both match the raw message. Narrow with other filters (`--from`, `--since`) and check the decoded `subject` field of `search --json` yourself, and tell the user before reporting a Bridge subject search as complete.
 
 ## Received Attachment Rules
 

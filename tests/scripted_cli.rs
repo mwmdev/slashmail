@@ -22,6 +22,29 @@ struct Message {
     deleted: bool,
     seen: bool,
     flagged: bool,
+    /// Gmail `X-GM-MSGID`, shared by a message's copies in label folders.
+    gmail_id: Option<u64>,
+    /// INTERNALDATE as Unix seconds and its zone in minutes east of UTC;
+    /// omitted from FETCH when `None`.
+    arrival: Option<(i64, i64)>,
+}
+
+impl Message {
+    fn gmail_id(mut self, id: u64) -> Self {
+        self.gmail_id = Some(id);
+        self
+    }
+
+    fn arrived(self, secs: i64) -> Self {
+        self.arrived_in(secs, 0)
+    }
+
+    /// Arrival as a server in zone `zone_minutes` records it; SINCE then
+    /// compares the arrival day in that zone.
+    fn arrived_in(mut self, secs: i64, zone_minutes: i64) -> Self {
+        self.arrival = Some((secs, zone_minutes));
+        self
+    }
 }
 
 struct Mailbox {
@@ -29,6 +52,8 @@ struct Mailbox {
     attributes: String,
     /// Send the LIST name as a literal instead of a quoted string.
     literal: bool,
+    /// Opened by SELECT/EXAMINE but left out of LIST.
+    unlisted: bool,
     /// UIDVALIDITY reported by the 1st, 2nd, ... SELECT (last value repeats).
     uid_validity: Vec<Option<u32>>,
     selects: usize,
@@ -55,12 +80,15 @@ struct State {
     /// Raw untagged lines appended to every UID FETCH response, as a server
     /// reporting flag changes made by other clients would.
     unsolicited_fetch: String,
+    /// Text after `* OK ` in the greeting.
+    greeting: String,
 }
 
 impl State {
     fn new(capabilities: &str) -> Self {
         State {
             capabilities: capabilities.to_string(),
+            greeting: "scripted IMAP ready".to_string(),
             ..State::default()
         }
     }
@@ -70,6 +98,7 @@ impl State {
             name: name.to_string(),
             attributes: String::new(),
             literal: false,
+            unlisted: false,
             uid_validity: uid_validity.to_vec(),
             selects: 0,
             vanish: Vec::new(),
@@ -89,6 +118,13 @@ impl State {
     fn special(mut self, name: &str, attributes: &str) -> Self {
         self = self.mailbox(name, &[Some(1)], &[]);
         self.mailboxes.last_mut().unwrap().attributes = attributes.to_string();
+        self
+    }
+
+    /// Add a mailbox the server opens but does not list.
+    fn unlisted(mut self, name: &str, messages: &[Message]) -> Self {
+        self = self.mailbox(name, &[Some(1)], messages);
+        self.mailboxes.last_mut().unwrap().unlisted = true;
         self
     }
 
@@ -125,18 +161,27 @@ impl State {
 }
 
 fn message(uid: u32, subject: &str) -> Message {
+    dated_message(
+        uid,
+        subject,
+        &format!("Mon, 1 Apr 2026 10:00:0{} +0000", uid % 10),
+    )
+}
+
+fn dated_message(uid: u32, subject: &str, date: &str) -> Message {
     Message {
         uid,
         raw: format!(
             "From: sender@example.com\r\nTo: user@example.com\r\nSubject: {subject}\r\n\
-             Date: Mon, 1 Apr 2026 10:00:0{} +0000\r\nMessage-ID: <{uid}@example.com>\r\n\r\n\
-             Body of {subject}\r\n",
-            uid % 10
+             Date: {date}\r\nMessage-ID: <{uid}@example.com>\r\n\r\n\
+             Body of {subject}\r\n"
         )
         .into_bytes(),
         deleted: false,
         seen: false,
         flagged: false,
+        gmail_id: None,
+        arrival: None,
     }
 }
 
@@ -147,6 +192,8 @@ fn raw_message(uid: u32, raw: &[u8]) -> Message {
         deleted: false,
         seen: false,
         flagged: false,
+        gmail_id: None,
+        arrival: None,
     }
 }
 
@@ -278,10 +325,106 @@ fn subject_of(raw: &[u8]) -> String {
         .unwrap_or_default()
 }
 
+const MONTHS: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// `(year, month, day)` of `1-Oct-2026` (SEARCH dates) or of the Date header
+/// `Thu, 1 Oct 2026 10:00:00 +0000`, ignoring time and zone as SEARCH does.
+fn civil_date(text: &str) -> (u32, usize, u32) {
+    let fields: Vec<&str> = text
+        .split(|c: char| c == '-' || c.is_whitespace())
+        .filter(|field| !field.is_empty() && !field.ends_with(','))
+        .collect();
+    let month = MONTHS.iter().position(|m| *m == fields[1]).unwrap() + 1;
+    (
+        fields[2].parse().unwrap(),
+        month,
+        fields[0].parse().unwrap(),
+    )
+}
+
+fn date_of(raw: &[u8]) -> (u32, usize, u32) {
+    let header = String::from_utf8_lossy(raw);
+    civil_date(
+        header
+            .lines()
+            .find_map(|line| line.strip_prefix("Date: "))
+            .unwrap(),
+    )
+}
+
+const DAY: i64 = 86_400;
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+}
+
+/// `(year, month, day, seconds into the day, weekday 0 = Sunday)` of UTC
+/// `secs` (Howard Hinnant's civil_from_days).
+fn civil(secs: i64) -> (i64, i64, i64, i64, i64) {
+    let days = secs.div_euclid(DAY);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = yoe + era * 400 + i64::from(month <= 2);
+    (
+        year,
+        month,
+        day,
+        secs.rem_euclid(DAY),
+        (days + 4).rem_euclid(7),
+    )
+}
+
+/// IMAP INTERNALDATE (`02-Oct-2026 10:00:00 +0000`) for `secs`, written in
+/// the zone `zone_minutes` east of UTC.
+fn internaldate(secs: i64, zone_minutes: i64) -> String {
+    let (year, month, day, time, _) = civil(secs + zone_minutes * 60);
+    let sign = if zone_minutes < 0 { '-' } else { '+' };
+    format!(
+        "{day:02}-{}-{year} {:02}:{:02}:{:02} {sign}{:02}{:02}",
+        MONTHS[(month - 1) as usize],
+        time / 3600,
+        time % 3600 / 60,
+        time % 60,
+        zone_minutes.abs() / 60,
+        zone_minutes.abs() % 60
+    )
+}
+
+/// RFC 2822 Date header value for `secs` since the epoch, written in the
+/// zone `zone_minutes` east of UTC.
+fn rfc2822(secs: i64, zone_minutes: i64) -> String {
+    let (year, month, day, time, weekday) = civil(secs + zone_minutes * 60);
+    let weekday = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][weekday as usize];
+    let sign = if zone_minutes < 0 { '-' } else { '+' };
+    format!(
+        "{weekday}, {day} {} {year} {:02}:{:02}:{:02} {sign}{:02}{:02}",
+        MONTHS[(month - 1) as usize],
+        time / 3600,
+        time % 3600 / 60,
+        time % 60,
+        zone_minutes.abs() / 60,
+        zone_minutes.abs() % 60
+    )
+}
+
+/// UIDs of `messages` matching `query`. SINCE compares the arrival day, or
+/// the Date header's day for messages without an arrival time.
 fn matching_uids(messages: &[Message], query: &str) -> Vec<u32> {
     let query = query.strip_prefix("CHARSET UTF-8 ").unwrap_or(query);
     let mut subject = None;
     let mut uids = None;
+    let mut since = None;
     let mut rest = query;
     while !rest.is_empty() {
         rest = rest.trim_start();
@@ -292,6 +435,10 @@ fn matching_uids(messages: &[Message], query: &str) -> Vec<u32> {
         } else if let Some(after) = rest.strip_prefix("UID ") {
             let (value, remaining) = take_astring(after);
             uids = Some(uid_set(&value));
+            rest = remaining;
+        } else if let Some(after) = rest.strip_prefix("SINCE ") {
+            let (value, remaining) = take_astring(after);
+            since = Some(civil_date(&value));
             rest = remaining;
         } else {
             let (_, remaining) = take_astring(rest);
@@ -306,6 +453,18 @@ fn matching_uids(messages: &[Message], query: &str) -> Vec<u32> {
                 .is_none_or(|s| subject_of(&m.raw).to_lowercase().contains(s))
         })
         .filter(|m| uids.as_ref().is_none_or(|set| set.contains(&m.uid)))
+        .filter(|m| {
+            since.is_none_or(|since| {
+                let day = match m.arrival {
+                    Some((secs, zone_minutes)) => {
+                        let (year, month, day, _, _) = civil(secs + zone_minutes * 60);
+                        (year as u32, month as usize, day as u32)
+                    }
+                    None => date_of(&m.raw),
+                };
+                day >= since
+            })
+        })
         .map(|m| m.uid)
         .collect()
 }
@@ -316,7 +475,8 @@ fn serve(stream: TcpStream, shared: &Mutex<State>) {
         .unwrap();
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
-    writer.write_all(b"* OK scripted IMAP ready\r\n").unwrap();
+    let greeting = format!("* OK {}\r\n", shared.lock().greeting);
+    writer.write_all(greeting.as_bytes()).unwrap();
 
     while let Some(raw) = read_command(&mut reader, &mut writer) {
         let command = String::from_utf8(raw).unwrap();
@@ -357,7 +517,7 @@ fn serve(stream: TcpStream, shared: &Mutex<State>) {
                 format!("* CAPABILITY {}\r\n{tag} OK done\r\n", state.capabilities).bytes(),
             ),
             ("LIST", _) => {
-                for mailbox in &state.mailboxes {
+                for mailbox in state.mailboxes.iter().filter(|mailbox| !mailbox.unlisted) {
                     let name = if mailbox.literal {
                         format!("{{{}}}\r\n{}", mailbox.name.len(), mailbox.name)
                     } else {
@@ -425,6 +585,25 @@ fn serve(stream: TcpStream, shared: &Mutex<State>) {
                 let mut parts = rest[10..].splitn(2, ' ');
                 let wanted = uid_set(parts.next().unwrap());
                 let items = parts.next().unwrap();
+                if items == "(UID X-GM-MSGID)" {
+                    for (position, message) in state.mailboxes[index].messages.iter().enumerate() {
+                        if let (true, Some(id)) = (wanted.contains(&message.uid), message.gmail_id)
+                        {
+                            out.extend(
+                                format!(
+                                    "* {} FETCH (X-GM-MSGID {id} UID {})\r\n",
+                                    position + 1,
+                                    message.uid
+                                )
+                                .bytes(),
+                            );
+                        }
+                    }
+                    out.extend(format!("{tag} OK fetched\r\n").bytes());
+                    drop(state);
+                    writer.write_all(&out).unwrap();
+                    continue;
+                }
                 let section = items
                     .split_once("BODY.PEEK[")
                     .map(|(_, after)| after.split_once(']').unwrap().0.to_string())
@@ -452,9 +631,15 @@ fn serve(stream: TcpStream, shared: &Mutex<State>) {
                     .filter_map(|(set, name)| set.then_some(name))
                     .collect();
                     let flags = flags.join(" ");
+                    let arrival = message
+                        .arrival
+                        .map(|(secs, zone)| {
+                            format!(" INTERNALDATE \"{}\"", internaldate(secs, zone))
+                        })
+                        .unwrap_or_default();
                     out.extend(
                         format!(
-                            "* {} FETCH (UID {} FLAGS ({flags}) RFC822.SIZE {} BODY[{section}] {{{}}}\r\n",
+                            "* {} FETCH (UID {} FLAGS ({flags}) RFC822.SIZE {}{arrival} BODY[{section}] {{{}}}\r\n",
                             position + 1,
                             message.uid,
                             message.raw.len(),
@@ -578,6 +763,40 @@ fn run_in(state: State, dir: &Path, args: &[&str]) -> (Output, State) {
     let server = Server::start(state);
     let output = slashmail(server.port, dir, args);
     (output, server.finish())
+}
+
+/// Run the CLI with one named account (`a0`, `a1`, ...) per scripted server.
+fn run_accounts(states: Vec<State>, args: &[&str]) -> Output {
+    let dir = tempfile::tempdir().unwrap();
+    let servers: Vec<Server> = states.into_iter().map(Server::start).collect();
+    let config: String = servers
+        .iter()
+        .enumerate()
+        .map(|(index, server)| {
+            format!(
+                "[[accounts]]\nname = \"a{index}\"\nhost = \"127.0.0.1\"\nport = {}\n\
+                 user = \"user@example.com\"\npass_env = \"SCRIPTED_PASS\"\n\n",
+                server.port
+            )
+        })
+        .collect();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, config).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_slashmail"))
+        .current_dir(dir.path())
+        .arg("--config")
+        .arg(&path)
+        .args(args)
+        .env("SCRIPTED_PASS", "secret")
+        .env_remove("SLASHMAIL_USER")
+        .env_remove("SLASHMAIL_PASS")
+        .stdin(Stdio::null())
+        .output()
+        .unwrap();
+    for server in servers {
+        server.finish();
+    }
+    output
 }
 
 fn stdout(output: &Output) -> String {
@@ -870,7 +1089,7 @@ fn non_ascii_search_without_literal_plus_fails_before_searching() {
         );
         assert_failure(
             &output,
-            "Non-ASCII search requires server support for LITERAL+",
+            "Non-ASCII search requires server support for LITERAL+ or LITERAL-",
         );
         assert!(
             !state
@@ -888,6 +1107,562 @@ fn non_ascii_search_without_literal_plus_fails_before_searching() {
     );
     assert_success(&output);
     assert!(stdout(&output).contains("1 message(s)"));
+}
+
+#[test]
+fn limited_search_without_sort_fetches_only_the_newest_headers() {
+    let now = now_secs();
+    // First day of the client's 7-day SINCE window.
+    let window_start = (now - 7 * DAY).div_euclid(DAY) * DAY;
+    let mut messages = vec![
+        dated_message(1, "Newest", &rfc2822(now - 3600, 0)),
+        // Inside the 7-day window by its date, in the window's first day.
+        dated_message(2, "Window edge", &rfc2822(window_start + 3600, 0)),
+        // Dated (and, with no arrival time, filed) the day before the window
+        // in its own zone (-11:00), so SINCE excludes it, yet 9 hours newer
+        // than "Window edge".
+        dated_message(
+            3,
+            "Western zone",
+            &rfc2822(window_start + 10 * 3600, -11 * 60),
+        ),
+    ];
+    // Enough old matches that fetching every header would be slow; their
+    // higher UIDs must not make them rank as newer.
+    messages.extend(
+        (4..=603).map(|uid| dated_message(uid, "Old", &rfc2822(1_600_000_000 + i64::from(uid), 0))),
+    );
+    let state =
+        |capabilities: &str| State::new(capabilities).mailbox("INBOX", &[Some(1)], &messages);
+
+    let (output, server) = run(state("IMAP4rev1"), &["search", "--limit", "2", "--json"]);
+    assert_success(&output);
+    assert_eq!(uids(&output), [1, 3]);
+    assert_eq!(
+        fetched_headers(&server.commands),
+        3,
+        "{:?}",
+        server.commands
+    );
+
+    // Recent windows hold too few matches: every header is fetched.
+    let (output, server) = run(state("IMAP4rev1"), &["search", "--limit", "4", "--json"]);
+    assert_success(&output);
+    assert_eq!(uids(&output), [1, 3, 2, 603]);
+    assert_eq!(fetched_headers(&server.commands), 603);
+
+    // `--all-folders` orders every folder by date on the client, so a SORT
+    // server narrows the same way instead of fetching every match.
+    let (output, server) = run(
+        state("IMAP4rev1 SORT"),
+        &["search", "--all-folders", "--limit", "2", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(uids(&output), [1, 3]);
+    assert_eq!(fetched_headers(&server.commands), 3);
+}
+
+#[test]
+fn a_date_after_arrival_neither_pins_a_message_nor_changes_limited_results() {
+    let now = now_secs();
+    let at = |uid, subject, date: i64, arrival: i64| {
+        dated_message(uid, subject, &rfc2822(date, 0)).arrived(arrival)
+    };
+    let mut messages = vec![
+        at(1, "Newest", now - 3600, now - 3600),
+        at(2, "Second", now - 7200, now - 7200),
+        // Dated ten minutes ago but arrived in 2020, as with a wrong clock or
+        // a forged date.
+        at(3, "Future date", now - 600, 1_600_000_000),
+    ];
+    messages.extend((4..=603).map(|uid| {
+        let time = 1_600_000_000 + i64::from(uid);
+        at(uid, "Old", time, time)
+    }));
+    let state = || State::new("IMAP4rev1").mailbox("INBOX", &[Some(1)], &messages);
+
+    // More than the matches: no narrowing, every header is fetched. A date
+    // more than a day after arrival does not put the message first.
+    let (output, _) = run(state(), &["search", "--limit", "700", "--json"]);
+    assert_success(&output);
+    let full = uids(&output);
+    assert_eq!(full[..2], [1, 2]);
+
+    let (output, server) = run(state(), &["search", "--limit", "2", "--json"]);
+    assert_success(&output);
+    assert_eq!(uids(&output), full[..2]);
+    assert_eq!(fetched_headers(&server.commands), 2);
+
+    // Merged folders are ordered the same way: the future date sorts just
+    // after its arrival (2020), above the older 2020 messages.
+    let (output, _) = run(
+        state(),
+        &["search", "--all-folders", "--limit", "3", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(uids(&output), [1, 2, 3]);
+}
+
+#[test]
+fn windows_allow_for_servers_that_date_arrivals_in_their_own_zone() {
+    let now = now_secs();
+    // First day of the client's 7-day SINCE window.
+    let window_start = (now - 7 * DAY).div_euclid(DAY) * DAY;
+    let mut messages = vec![
+        dated_message(1, "Newest", &rfc2822(now - 3600, 0)).arrived(now - 3600),
+        dated_message(2, "In window", &rfc2822(window_start + 26 * 3600, 0))
+            .arrived(window_start + 26 * 3600),
+        // Arrived at 05:00 UTC on the window's first day, which a -07:00
+        // server files under the day before, so SINCE excludes it. Its Date
+        // is 23 hours later, so it sorts above "In window".
+        dated_message(3, "West of UTC", &rfc2822(window_start + 28 * 3600, 0))
+            .arrived_in(window_start + 5 * 3600, -7 * 60),
+    ];
+    messages.extend((4..=603).map(|uid| {
+        let time = 1_600_000_000 + i64::from(uid);
+        dated_message(uid, "Old", &rfc2822(time, 0)).arrived(time)
+    }));
+    let state = || State::new("IMAP4rev1").mailbox("INBOX", &[Some(1)], &messages);
+
+    let (output, _) = run(state(), &["search", "--limit", "700", "--json"]);
+    assert_success(&output);
+    assert_eq!(uids(&output)[..3], [1, 3, 2]);
+    let (output, _) = run(state(), &["search", "--limit", "2", "--json"]);
+    assert_success(&output);
+    assert_eq!(uids(&output), [1, 3]);
+}
+
+#[test]
+fn all_accounts_merge_picks_the_newest_across_accounts() {
+    let base = 1_790_812_800; // 2026-10-01T00:00:00Z
+    let at = |uid, subject, date: i64, arrival: i64| {
+        dated_message(uid, subject, &rfc2822(date, 0)).arrived(arrival)
+    };
+    // This scripted SORT returns the highest UID first, as RFC 5256 SORT
+    // does for "Future date": its Date header is months after it arrived.
+    let accounts = || {
+        vec![
+            State::new("IMAP4rev1 SORT").mailbox(
+                "INBOX",
+                &[Some(1)],
+                &[
+                    at(1, "Yesterday", base - DAY, base - DAY),
+                    at(2, "Today", base, base),
+                    at(9, "Future date", base + 92 * DAY, base - 30 * DAY),
+                ],
+            ),
+            State::new("IMAP4rev1").mailbox(
+                "INBOX",
+                &[Some(1)],
+                &[at(1, "Two weeks ago", base - 16 * DAY, base - 16 * DAY)],
+            ),
+        ]
+    };
+    let subjects = |output: &Output| -> Vec<String> {
+        let rows: serde_json::Value = serde_json::from_str(&stdout(output)).unwrap();
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["subject"].as_str().unwrap().to_string())
+            .collect()
+    };
+
+    let output = run_accounts(
+        accounts(),
+        &["search", "--all-accounts", "--limit", "2", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(subjects(&output), ["Today", "Yesterday"]);
+
+    // The merge orders by the date capped at arrival: "Future date" ranks
+    // below the other account's message.
+    let output = run_accounts(
+        accounts(),
+        &["search", "--all-accounts", "--limit", "3", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(subjects(&output), ["Today", "Yesterday", "Two weeks ago"]);
+
+    let output = run_accounts(accounts(), &["read", "--all-accounts", "--json"]);
+    assert_success(&output);
+    assert_eq!(subjects(&output), ["Today"]);
+}
+
+#[test]
+fn proton_bridge_label_views_are_left_out_of_all_folders() {
+    // Proton Bridge's layout: a message sits in one regular folder and is
+    // also listed in each of its labels and, when starred, in Starred.
+    let state = |greeting: &str| {
+        let mut state = State::new("IMAP4rev1 MOVE UIDPLUS")
+            .mailbox("INBOX", &[Some(1)], &[message(1, "Labelled")])
+            .mailbox("Archive", &[Some(2)], &[message(2, "Starred one")])
+            .special("Labels", "\\Noselect")
+            .mailbox("Labels/Work", &[Some(3)], &[message(7, "Labelled")])
+            .mailbox("Starred", &[Some(4)], &[message(8, "Starred one")])
+            .special("Folders", "\\Noselect")
+            .mailbox("Folders/Projects", &[Some(5)], &[message(3, "Filed")]);
+        let starred = state.find("Starred").unwrap();
+        state.mailboxes[starred].attributes = "\\Flagged".to_string();
+        state.greeting = greeting.to_string();
+        state
+    };
+    let folders = |output: &Output| -> Vec<String> {
+        let rows: serde_json::Value = serde_json::from_str(&stdout(output)).unwrap();
+        let mut folders: Vec<String> = rows
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["folder"].as_str().unwrap().to_string())
+            .collect();
+        folders.sort();
+        folders
+    };
+    let bridge = "[CAPABILITY IMAP4rev1] ProtonMailBridge 03.23.01 - gluon session ID 7";
+
+    let (output, _) = run(state(bridge), &["search", "--all-folders", "--json"]);
+    assert_success(&output);
+    assert_eq!(folders(&output), ["Archive", "Folders/Projects", "INBOX"]);
+    let (output, _) = run(state(bridge), &["count", "--all-folders", "--json"]);
+    assert_success(&output);
+    let counts: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(counts["total"], 3);
+
+    // Other servers: those folders hold real copies and are searched.
+    let (output, _) = run(
+        state("Dovecot ready."),
+        &["search", "--all-folders", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(
+        folders(&output),
+        [
+            "Archive",
+            "Folders/Projects",
+            "INBOX",
+            "Labels/Work",
+            "Starred"
+        ]
+    );
+}
+
+#[test]
+fn count_and_attachments_open_folders_the_server_does_not_list() {
+    let state = || {
+        State::new("IMAP4rev1")
+            .mailbox("INBOX", &[Some(1)], &[])
+            .unlisted("Hidden", &[message(4, "Hidden mail")])
+    };
+    let (output, _) = run(state(), &["count", "-f", "Hidden", "--json"]);
+    assert_success(&output);
+    let count: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(count, serde_json::json!({"folder": "Hidden", "count": 1}));
+
+    let (output, _) = run(state(), &["attachments", "-f", "Hidden", "4", "--json"]);
+    assert_success(&output);
+
+    // Searches and actions still require a listed folder.
+    let (output, _) = run(state(), &["search", "-f", "Hidden"]);
+    assert_failure(&output, "Folder 'Hidden' does not exist");
+}
+
+fn fetched_headers(commands: &[String]) -> usize {
+    commands
+        .iter()
+        .filter_map(|c| c.strip_prefix("UID FETCH "))
+        .map(|c| uid_set(c.split(' ').next().unwrap()).len())
+        .sum()
+}
+
+fn uids(output: &Output) -> Vec<u64> {
+    let rows: serde_json::Value = serde_json::from_str(&stdout(output)).unwrap();
+    rows.as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["uid"].as_u64().unwrap())
+        .collect()
+}
+
+#[test]
+fn all_folders_limit_picks_the_newest_by_date_across_folders() {
+    // This scripted SORT returns the highest UID first, as an RFC 5256 server
+    // does for an undated message that arrived last.
+    let undated = raw_message(
+        10,
+        b"From: a@example.com\r\nSubject: Undated\r\n\r\nbody\r\n",
+    );
+    for capabilities in ["IMAP4rev1 SORT", "IMAP4rev1"] {
+        let (output, _) = run(
+            State::new(capabilities)
+                .mailbox(
+                    "A",
+                    &[Some(1)],
+                    &[
+                        dated_message(2, "Recent", "Thu, 2 Apr 2026 10:00:00 +0000"),
+                        undated.clone(),
+                    ],
+                )
+                .mailbox(
+                    "B",
+                    &[Some(2)],
+                    &[dated_message(1, "Old", "Wed, 1 Jan 2020 10:00:00 +0000")],
+                ),
+            &["search", "--all-folders", "--limit", "1", "--json"],
+        );
+        assert_success(&output);
+        let rows: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+        assert_eq!(rows[0]["subject"], "Recent", "{capabilities}");
+    }
+}
+
+#[test]
+fn gmail_label_copies_are_listed_and_counted_once() {
+    let shared = |uid| dated_message(uid, "Shared", "Wed, 1 Apr 2026 12:00:00 +0000").gmail_id(100);
+    let state = |capabilities: &str| {
+        State::new(capabilities)
+            // Gmail lists user labels such as "Work" before INBOX.
+            .mailbox(
+                "Work",
+                &[Some(1)],
+                &[shared(1), message(2, "Work only").gmail_id(200)],
+            )
+            .mailbox(
+                "INBOX",
+                &[Some(2)],
+                &[
+                    shared(5),
+                    dated_message(6, "Same date", "Wed, 1 Apr 2026 12:00:00 +0000").gmail_id(600),
+                ],
+            )
+            .mailbox(
+                "[Gmail]/Important",
+                &[Some(3)],
+                &[shared(9), message(3, "Important only").gmail_id(300)],
+            )
+            .mailbox("Archive", &[Some(4)], &[])
+    };
+    let rows = |output: &Output| -> Vec<(String, u64)> {
+        let rows: serde_json::Value = serde_json::from_str(&stdout(output)).unwrap();
+        rows.as_array()
+            .unwrap()
+            .iter()
+            .map(|row| {
+                (
+                    row["folder"].as_str().unwrap().to_string(),
+                    row["uid"].as_u64().unwrap(),
+                )
+            })
+            .collect()
+    };
+    let gmail = "IMAP4rev1 MOVE X-GM-EXT-1";
+
+    // One row per message, from INBOX when the message is there.
+    let (output, _) = run(state(gmail), &["search", "--all-folders", "--json"]);
+    assert_success(&output);
+    let all = rows(&output);
+    let mut sorted = all.clone();
+    sorted.sort();
+    assert_eq!(
+        sorted,
+        [
+            ("INBOX".to_string(), 5),
+            ("INBOX".to_string(), 6),
+            ("Work".to_string(), 2),
+            ("[Gmail]/Important".to_string(), 3),
+        ]
+    );
+
+    // A limit returns the start of the full list, even when the cut falls
+    // between messages with the same date.
+    let (output, _) = run(
+        state(gmail),
+        &["search", "--all-folders", "--limit", "1", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(rows(&output), all[..1]);
+
+    // Folders keep their own counts; the total counts each message once.
+    let (output, _) = run(state(gmail), &["count", "--all-folders", "--json"]);
+    assert_success(&output);
+    let counts: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(
+        counts,
+        serde_json::json!({"folders": [
+            {"folder": "Work", "count": 2},
+            {"folder": "INBOX", "count": 2},
+            {"folder": "[Gmail]/Important", "count": 2},
+        ], "total": 4})
+    );
+
+    // Actions take the kept copy only.
+    let (output, server) = run(
+        state(gmail),
+        &[
+            "move",
+            "--all-folders",
+            "--subject",
+            "Shared",
+            "--dest",
+            "Archive",
+            "--yes",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(mutations(&server.commands), [r#"UID MOVE 5 "Archive""#]);
+
+    // Other servers: every folder copy is a distinct message.
+    let (output, server) = run(
+        state("IMAP4rev1 MOVE"),
+        &["search", "--all-folders", "--json"],
+    );
+    assert_success(&output);
+    assert_eq!(rows(&output).len(), 6);
+    assert!(!server.commands.iter().any(|c| c.contains("X-GM-MSGID")));
+}
+
+#[test]
+fn non_ascii_search_with_literal_minus_is_limited_to_4096_byte_literals() {
+    // Gmail advertises LITERAL- (RFC 7888), not LITERAL+.
+    let state = || {
+        State::new("IMAP4rev1 LITERAL-").mailbox("INBOX", &[Some(1)], &[message(3, "café menu")])
+    };
+    let (output, server) = run(state(), &["search", "--subject", "café", "--json"]);
+    assert_success(&output);
+    assert!(server
+        .commands
+        .contains(&"UID SEARCH CHARSET UTF-8 SUBJECT {5+}\r\ncafé".to_string()));
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(rows[0]["uid"], 3);
+
+    let largest = "é".repeat(2048);
+    let (output, server) = run(state(), &["count", "--subject", &largest]);
+    assert_success(&output);
+    assert!(server
+        .commands
+        .iter()
+        .any(|c| c.starts_with("UID SEARCH CHARSET UTF-8 SUBJECT {4096+}\r\n")));
+
+    let too_long = format!("{largest}a");
+    let (output, server) = run(state(), &["count", "--subject", &too_long]);
+    assert_failure(
+        &output,
+        "Non-ASCII search terms over 4096 bytes require server support for LITERAL+",
+    );
+    assert!(!server.commands.iter().any(|c| c.starts_with("UID")));
+}
+
+#[test]
+fn noselect_containers_are_never_opened_or_counted() {
+    let state = || {
+        let mut state = State::new("IMAP4rev1")
+            .mailbox("INBOX", &[Some(1)], &[message(3, "Inbox mail")])
+            .special("[Gmail]", "\\HasChildren \\Noselect")
+            .mailbox("[Gmail]/Starred", &[Some(2)], &[message(4, "Starred mail")]);
+        state.status.insert(
+            "INBOX".into(),
+            r#"* STATUS "INBOX" (MESSAGES 1 UNSEEN 1 RECENT 0)"#.into(),
+        );
+        state
+    };
+    let touches_container = |commands: &[String]| {
+        commands
+            .iter()
+            .any(|c| c.ends_with(" \"[Gmail]\"") || c.contains(" \"[Gmail]\" "))
+    };
+
+    for args in [
+        vec!["search", "--all-folders", "--json"],
+        vec!["count", "--all-folders"],
+    ] {
+        let (output, server) = run(state(), &args);
+        assert_success(&output);
+        assert!(!stderr(&output).contains("Warning"), "{}", stderr(&output));
+        assert!(
+            !touches_container(&server.commands),
+            "{:?}",
+            server.commands
+        );
+    }
+
+    let (output, server) = run(state(), &["status"]);
+    assert_success(&output);
+    assert!(
+        !touches_container(&server.commands),
+        "{:?}",
+        server.commands
+    );
+    let table = stdout(&output);
+    assert!(table.contains("[Gmail]/Starred"));
+    assert!(!table.contains("[Gmail] "), "{table}");
+}
+
+#[test]
+fn modified_utf7_folder_names_display_decoded_and_accept_either_form() {
+    let wire = "[Gmail]/Messages envoy&AOk-s";
+    let state = || {
+        State::new("IMAP4rev1 MOVE")
+            .mailbox("INBOX", &[Some(1)], &[])
+            .mailbox(wire, &[Some(2)], &[message(5, "Sent report")])
+            .mailbox("R&-D", &[Some(3)], &[])
+            .mailbox("Clients&-Partners-2024", &[Some(4)], &[])
+            // Not valid modified UTF-7: a raw UTF-8 name, and a run that
+            // decodes to ESC and would hide the "A" of "AINBOX".
+            .literal("Ärger")
+            .mailbox("&ABs-AINBOX", &[Some(5)], &[])
+    };
+
+    // Displayed and listed forms both resolve to the listed name, which is
+    // what the server receives.
+    for (folder, listed) in [
+        ("[Gmail]/Messages envoyés", wire),
+        (wire, wire),
+        ("Clients&Partners-2024", "Clients&-Partners-2024"),
+        ("Ärger", "Ärger"),
+    ] {
+        let (output, server) = run(state(), &["search", "-f", folder, "--json"]);
+        assert_success(&output);
+        assert!(
+            server.commands.contains(&format!("EXAMINE \"{listed}\"")),
+            "{folder}: {:?}",
+            server.commands
+        );
+    }
+
+    // JSON keeps the listed name so it can be passed back; the table decodes it.
+    let (output, _) = run(state(), &["search", "--all-folders", "--json"]);
+    assert_success(&output);
+    let rows: serde_json::Value = serde_json::from_str(&stdout(&output)).unwrap();
+    assert_eq!(rows[0]["folder"], wire);
+    let (output, _) = run(state(), &["search", "--all-folders"]);
+    assert_success(&output);
+    assert!(stdout(&output).contains("Messages envoyés"));
+    assert!(!stdout(&output).contains("&AOk-"));
+
+    let (output, _) = run(state(), &["status"]);
+    assert_success(&output);
+    let table = stdout(&output);
+    assert!(table.contains("[Gmail]/Messages envoyés"));
+    assert!(table.contains("R&D"));
+    assert!(table.contains("Clients&Partners-2024"));
+    assert!(table.contains("Ärger"));
+    assert!(table.contains("&ABs-AINBOX"), "{table}");
+    assert!(!table.contains("&AOk-"));
+
+    // A plain `&` resolves to its `&-` listing; missing names show as typed.
+    let (output, server) = run(
+        state(),
+        &[
+            "move",
+            "-f",
+            "[Gmail]/Messages envoyés",
+            "--dest",
+            "R&D",
+            "--yes",
+        ],
+    );
+    assert_success(&output);
+    assert_eq!(server.uids("R&-D"), [1]);
+    let (output, _) = run(state(), &["search", "-f", "Brouillons modifiés"]);
+    assert_failure(&output, "Folder 'Brouillons modifiés' does not exist");
 }
 
 #[test]
@@ -936,7 +1711,8 @@ fn all_folders_skips_special_use_mailboxes_but_not_substring_matches() {
             .mailbox("INBOX", &[Some(1)], &[message(1, "Hello")])
             .mailbox("Small mail", &[Some(2)], &[message(1, "Hello small")])
             .special("Everything", "\\All")
-            .special("Deleted Items", "\\Trash")
+            .special("Deleted Items", "\\HasChildren \\Trash")
+            .mailbox("Deleted Items/Old", &[Some(3)], &[message(1, "Hello old")])
             .special("Junk Email", "\\HasNoChildren \\Junk")
     };
     let (output, server) = run(state(), &["count", "--all-folders", "--subject", "Hello"]);

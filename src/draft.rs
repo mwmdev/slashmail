@@ -55,6 +55,51 @@ pub struct ComposedDraft {
 pub struct MailboxListing {
     pub name: String,
     pub attributes: Vec<String>,
+    /// Hierarchy delimiter from LIST (`/` or `.`); `None` for a flat
+    /// namespace.
+    pub delimiter: Option<String>,
+}
+
+impl MailboxListing {
+    /// `\Noselect` and `\NonExistent` (RFC 5258) mailboxes cannot be opened,
+    /// such as Gmail's `[Gmail]` container.
+    pub fn is_selectable(&self) -> bool {
+        !self.has_attribute("\\Noselect") && !self.has_attribute("\\NonExistent")
+    }
+
+    pub fn has_attribute(&self, expected: &str) -> bool {
+        self.attributes
+            .iter()
+            .any(|attribute| attribute.eq_ignore_ascii_case(expected))
+    }
+
+    /// Whether `other` is nested inside this mailbox (`Trash/Old` in
+    /// `Trash`).
+    pub fn contains(&self, other: &MailboxListing) -> bool {
+        self.delimiter
+            .as_deref()
+            .filter(|delimiter| !delimiter.is_empty())
+            .is_some_and(|delimiter| {
+                other
+                    .name
+                    .strip_prefix(&self.name)
+                    .is_some_and(|rest| rest.starts_with(delimiter))
+            })
+    }
+
+    /// The listed mailbox a user-supplied name refers to: an exact match
+    /// (INBOX case-insensitively), else the one listed under the name's
+    /// modified UTF-7 encoding. `Envoyés`, `Envoy&AOk-s`, `R&D` (listed as
+    /// `R&-D`), and names a server lists in raw UTF-8 all resolve.
+    pub fn find<'a>(mailboxes: &'a [MailboxListing], requested: &str) -> Option<&'a Self> {
+        mailboxes
+            .iter()
+            .find(|mailbox| crate::search::same_mailbox(&mailbox.name, requested))
+            .or_else(|| {
+                let encoded = crate::utf7::encode(requested);
+                mailboxes.iter().find(|mailbox| mailbox.name == encoded)
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -146,19 +191,15 @@ pub fn resolve_destination(
     let requested = command_override.or(configured);
     if let Some(requested) = requested {
         validate_header_text(requested, "Drafts folder")?;
-        let matches = mailboxes
-            .iter()
-            .filter(|mailbox| mailbox.name == requested && is_selectable(mailbox))
-            .collect::<Vec<_>>();
-        return match matches.as_slice() {
-            [mailbox] => Ok(mailbox.name.clone()),
+        return match MailboxListing::find(mailboxes, requested) {
+            Some(mailbox) if mailbox.is_selectable() => Ok(mailbox.name.clone()),
             _ => bail!("Drafts folder '{requested}' does not exist or is not selectable"),
         };
     }
 
     let candidates = mailboxes
         .iter()
-        .filter(|mailbox| is_selectable(mailbox) && has_attribute(mailbox, "\\Drafts"))
+        .filter(|mailbox| mailbox.is_selectable() && mailbox.has_attribute("\\Drafts"))
         .collect::<Vec<_>>();
     match candidates.as_slice() {
         [mailbox] => Ok(mailbox.name.clone()),
@@ -169,17 +210,6 @@ pub fn resolve_destination(
             "Multiple selectable server-designated Drafts folders found; use --drafts-folder or configure drafts_folder"
         ),
     }
-}
-
-fn is_selectable(mailbox: &MailboxListing) -> bool {
-    !has_attribute(mailbox, "\\Noselect")
-}
-
-fn has_attribute(mailbox: &MailboxListing, expected: &str) -> bool {
-    mailbox
-        .attributes
-        .iter()
-        .any(|attribute| attribute.eq_ignore_ascii_case(expected))
 }
 
 pub fn require_exact_source(fetches: Vec<MessageFetch>, requested_uid: u32) -> Result<Vec<u8>> {
@@ -278,7 +308,7 @@ pub fn render_receipt(receipt: &DraftReceipt) -> String {
     format!(
         "Draft saved: Account={} | Folder={} | UID={} | To={} | Cc={} | Bcc={} | Subject={}",
         sanitize_receipt_field(&receipt.account),
-        sanitize_receipt_field(&receipt.folder),
+        crate::display::sanitize_folder_name(&receipt.folder),
         receipt.uid,
         render_receipt_list(&receipt.to),
         render_receipt_list(&receipt.cc),
@@ -1491,18 +1521,22 @@ Content-Transfer-Encoding: base64\r\n\r\n\
             MailboxListing {
                 name: "Nested/Entwürfe".to_string(),
                 attributes: vec!["\\dRaFtS".to_string(), "\\HasNoChildren".to_string()],
+                delimiter: None,
             },
             MailboxListing {
                 name: "Disabled".to_string(),
                 attributes: vec!["\\DRAFTS".to_string(), "\\NOSELECT".to_string()],
+                delimiter: None,
             },
             MailboxListing {
                 name: "Configured".to_string(),
                 attributes: Vec::new(),
+                delimiter: None,
             },
             MailboxListing {
                 name: "Command".to_string(),
                 attributes: Vec::new(),
+                delimiter: None,
             },
         ];
 
@@ -1529,10 +1563,12 @@ Content-Transfer-Encoding: base64\r\n\r\n\
             MailboxListing {
                 name: "Drafts".to_string(),
                 attributes: vec!["\\Drafts".to_string()],
+                delimiter: None,
             },
             MailboxListing {
                 name: "Other/Drafts".to_string(),
                 attributes: vec!["\\drafts".to_string()],
+                delimiter: None,
             },
         ];
         assert!(resolve_destination(None, None, &mailboxes).is_err());

@@ -2,7 +2,7 @@ use crate::draft::{AppendAttempt, DraftMailboxSession, HeaderFetch, MailboxListi
 use crate::search;
 use anyhow::{Context, Result};
 use imap::Session;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{self, ErrorKind};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
@@ -21,6 +21,10 @@ enum Inner {
 pub struct ImapSession {
     inner: Inner,
     capabilities: HashSet<String>,
+    /// The server greeted as Proton Mail Bridge, whose `Labels/...` folders
+    /// and `Starred` are views of messages that also sit in exactly one
+    /// regular folder.
+    proton_bridge: bool,
 }
 
 impl ImapSession {
@@ -53,14 +57,13 @@ impl ImapSession {
     }
 
     /// Run `UID SEARCH`. Queries containing UTF-8 literals declare
-    /// `CHARSET UTF-8` and require LITERAL+ so no continuation is needed.
+    /// `CHARSET UTF-8` and must pass `search::ensure_query_supported`, so no
+    /// continuation is needed.
     pub fn uid_search(&mut self, query: &str) -> Result<HashSet<u32>> {
+        search::ensure_query_supported(self, query)?;
         let command = if query.is_ascii() {
             std::borrow::Cow::Borrowed(query)
         } else {
-            if !self.has_capability("LITERAL+") {
-                anyhow::bail!(search::LITERAL_PLUS_REQUIRED);
-            }
             std::borrow::Cow::Owned(format!("CHARSET UTF-8 {query}"))
         };
         let uids = match &mut self.inner {
@@ -135,6 +138,37 @@ impl ImapSession {
         );
         let data = self.run_command_and_read_response(&command)?;
         parse_status_response(&data)
+    }
+
+    /// Gmail's `X-GM-MSGID` for each UID of `uid_set` in the selected
+    /// mailbox. Gmail lists a message once per label, and the ID is the same
+    /// in every label folder. UIDs the server omits are absent.
+    pub fn gmail_message_ids(&mut self, uid_set: &str) -> Result<HashMap<u32, u64>> {
+        let data =
+            self.run_command_and_read_response(&format!("UID FETCH {uid_set} (UID X-GM-MSGID)"))?;
+        let mut ids = HashMap::new();
+        parse_responses(&data, |_, response| {
+            if let imap_proto::Response::Fetch(_, attributes) = response {
+                let mut uid = None;
+                let mut id = None;
+                for attribute in attributes {
+                    match attribute {
+                        imap_proto::AttributeValue::Uid(value) => uid = Some(value),
+                        imap_proto::AttributeValue::GmailMsgId(value) => id = Some(value),
+                        _ => {}
+                    }
+                }
+                if let (Some(uid), Some(id)) = (uid, id) {
+                    ids.insert(uid, id);
+                }
+            }
+            true
+        })?;
+        Ok(ids)
+    }
+
+    pub fn is_proton_bridge(&self) -> bool {
+        self.proton_bridge
     }
 
     pub fn get_quota_root(
@@ -320,13 +354,15 @@ fn parse_list_response(data: &[u8]) -> Result<Vec<MailboxListing>> {
     parse_responses(data, |raw, response| {
         if let imap_proto::Response::MailboxData(imap_proto::MailboxDatum::List {
             name_attributes,
+            delimiter,
             name,
-            ..
         }) = response
         {
             listed.push(MailboxListing {
                 name: listed_mailbox_name(raw, &name),
                 attributes: name_attributes.iter().map(name_attribute_text).collect(),
+                // A delimiter is a quoted char or NIL, never a literal.
+                delimiter: delimiter.map(|delimiter| unescape_quoted(&delimiter)),
             });
         }
         true
@@ -353,8 +389,14 @@ fn listed_mailbox_name(raw: &[u8], name: &str) -> String {
     if is_literal || !line.ends_with(b"\"") {
         return name.to_string();
     }
-    let mut decoded = String::with_capacity(name.len());
-    let mut characters = name.chars();
+    unescape_quoted(name)
+}
+
+/// Remove the `\` of each quoted-pair (`\\`, `\"`) that imap-proto leaves in
+/// a quoted string.
+fn unescape_quoted(text: &str) -> String {
+    let mut decoded = String::with_capacity(text.len());
+    let mut characters = text.chars();
     while let Some(character) = characters.next() {
         match character {
             '\\' => decoded.extend(characters.next()),
@@ -422,7 +464,7 @@ pub fn ensure_secure_transport(host: &str, tls: bool) -> Result<()> {
 pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Result<ImapSession> {
     ensure_secure_transport(host, tls)?;
 
-    let mut session = if tls {
+    let (mut session, greeting) = if tls {
         let tls_connector = native_tls::TlsConnector::builder()
             .min_protocol_version(Some(native_tls::Protocol::Tlsv12))
             .danger_accept_invalid_certs(false)
@@ -435,26 +477,26 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
             .connect(host, tcp)
             .with_context(|| format!("Failed to TLS-connect to {host}:{port}"))?;
         let mut client = imap::Client::new(tls);
-        client
+        let greeting = client
             .read_greeting()
             .context("Failed to read the IMAP greeting")?;
         let s = client
             .login(user, pass)
             .map_err(|e| e.0)
             .context("IMAP login failed")?;
-        Inner::Tls(s)
+        (Inner::Tls(s), greeting)
     } else {
         let tcp = connect_tcp(host, port, IMAP_CONNECT_TIMEOUT, IMAP_IO_TIMEOUT)
             .with_context(|| format!("Failed to connect to {host}:{port}"))?;
         let mut client = imap::Client::new(tcp);
-        client
+        let greeting = client
             .read_greeting()
             .context("Failed to read the IMAP greeting")?;
         let s = client
             .login(user, pass)
             .map_err(|e| e.0)
             .context("IMAP login failed")?;
-        Inner::Plain(s)
+        (Inner::Plain(s), greeting)
     };
 
     let caps = match &mut session {
@@ -462,17 +504,34 @@ pub fn connect(host: &str, port: u16, tls: bool, user: &str, pass: &str) -> Resu
         Inner::Tls(s) => s.capabilities(),
     }
     .context("Failed to fetch capabilities")?;
-    let capabilities = ["SORT", "MOVE", "QUOTA", "UIDPLUS", "LITERAL+"]
-        .iter()
-        .filter(|c| caps.has_str(**c))
-        .map(|c| c.to_string())
-        .collect();
+    let capabilities = [
+        "SORT",
+        "MOVE",
+        "QUOTA",
+        "UIDPLUS",
+        "LITERAL+",
+        "LITERAL-",
+        "X-GM-EXT-1",
+    ]
+    .iter()
+    .filter(|c| caps.has_str(**c))
+    .map(|c| c.to_string())
+    .collect();
     drop(caps);
 
     Ok(ImapSession {
         inner: session,
         capabilities,
+        proton_bridge: is_proton_bridge_greeting(&greeting),
     })
+}
+
+/// Proton Mail Bridge greets with `* OK [...] ProtonMailBridge 03.23.01 -
+/// gluon session ID 1`.
+fn is_proton_bridge_greeting(greeting: &[u8]) -> bool {
+    greeting
+        .windows(b"ProtonMailBridge".len())
+        .any(|window| window == b"ProtonMailBridge")
 }
 
 fn connect_tcp(
