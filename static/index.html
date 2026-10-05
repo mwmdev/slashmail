@@ -26,7 +26,7 @@
   <link rel="canonical" href="https://www.slashmail.io/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=0.8.1-1">
+  <link rel="stylesheet" href="styles.css?v=0.8.1-2">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -40,6 +40,13 @@
       <a class="nav-secondary" href="#use-cases">Use cases</a>
       <a class="nav-secondary" href="#commands">Commands</a>
       <a class="nav-secondary" href="#privacy">Privacy</a>
+      <div class="nav-menu">
+        <button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="tutorials-menu">Tutorials<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg></button>
+        <ul class="nav-submenu" id="tutorials-menu">
+          <li><a href="tutorials.html#local-model">Use a local model</a></li>
+          <li><a href="tutorials.html#proton-bridge">Use Proton Mail Bridge</a></li>
+        </ul>
+      </div>
       <a class="nav-secondary cta-button-outline" href="#demo">Watch the demo</a>
       <a class="cta-button cta-button-sm" href="#get-started">Get started</a>
     </nav>
@@ -202,7 +209,7 @@ user = "you@gmail.com"</code></pre>
             <div><dt>Gmail</dt><dd>Use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">app password</a>, not your Google password. Requires 2-Step Verification.</dd></div>
             <div><dt>Yahoo</dt><dd>Use an app password from your account security settings.</dd></div>
             <div><dt>iCloud</dt><dd>Use an app-specific password from your Apple Account.</dd></div>
-            <div><dt>Proton</dt><dd>Use the password shown in Proton Mail Bridge.</dd></div>
+            <div><dt>Proton</dt><dd>Use the password shown in Proton Mail Bridge. See the <a href="tutorials.html#proton-bridge">Bridge tutorial</a>.</dd></div>
             <div><dt>Outlook</dt><dd>Not supported yet: Microsoft no longer accepts passwords over IMAP.</dd></div>
           </dl>
         </li>
@@ -510,7 +517,7 @@ Updated 2 message(s).</pre>
         </article>
         <article>
           <strong>AI agents</strong>
-          <p>When your LLM agent runs <span class="inline-code">read</span>, its provider receives the full message. For confidential mail, use slashmail with a local LLM model.</p>
+          <p>When your LLM agent runs <span class="inline-code">read</span>, its provider receives the full message. For confidential mail, <a href="tutorials.html#local-model">use slashmail with a local model</a>.</p>
         </article>
         <article>
           <strong>This site</strong>
@@ -522,7 +529,7 @@ Updated 2 message(s).</pre>
   </main>
 
   <footer class="site-footer">
-    <span>slashmail <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.1" target="_blank" rel="noreferrer">v0.8.1</a> · Last updated 2 October 2026</span>
+    <span>slashmail <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.1" target="_blank" rel="noreferrer">v0.8.1</a> · Last updated 5 October 2026</span>
     <nav aria-label="Footer navigation">
       <a href="https://github.com/mwmdev/slashmail/issues" target="_blank" rel="noreferrer">Report an issue</a>
       <a class="footer-github" href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer" aria-label="Slashmail on GitHub">
@@ -535,57 +542,8 @@ Updated 2 message(s).</pre>
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </a>
 
-
+  <script src="site.js?v=0.8.1-2"></script>
   <script>
-    const copyTimers = new WeakMap();
-
-    function resetCopyState(element) {
-      element.classList.remove('is-copied', 'copy-failed');
-    }
-
-    function scheduleCopyReset(element, label) {
-      window.clearTimeout(copyTimers.get(element));
-      copyTimers.set(element, window.setTimeout(() => {
-        resetCopyState(element);
-        element.setAttribute('aria-label', label);
-      }, 1600));
-    }
-
-    document.querySelectorAll('.copy-block').forEach((block) => {
-      const heading = block.closest('.setup-step')?.querySelector('h3').textContent ?? 'Install';
-      const label = `Copy ${heading} command`;
-      block.setAttribute('role', 'button');
-      block.setAttribute('tabindex', '0');
-      block.setAttribute('aria-label', label);
-      block.setAttribute('title', label);
-
-      const copyCommand = async () => {
-        resetCopyState(block);
-        try {
-          await navigator.clipboard.writeText(block.textContent.trim());
-          block.classList.add('is-copied');
-          block.setAttribute('aria-label', `${heading} command copied`);
-        } catch {
-          block.classList.add('copy-failed');
-          block.setAttribute('aria-label', `Could not copy ${heading} command`);
-        }
-        scheduleCopyReset(block, label);
-      };
-
-      block.addEventListener('click', copyCommand);
-      block.addEventListener('keydown', (event) => {
-        if (event.key === 'Enter' || event.key === ' ') {
-          event.preventDefault();
-          copyCommand();
-        }
-      });
-    });
-
-    const toTop = document.querySelector('.to-top');
-    const toggleToTop = () => toTop.classList.toggle('is-visible', window.scrollY > 900);
-    window.addEventListener('scroll', toggleToTop, { passive: true });
-    toggleToTop();
-
     const navLinks = new Map([...document.querySelectorAll('nav a[href^="#"]')].map((link) => [link.hash.slice(1), link]));
     const sectionSpy = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
