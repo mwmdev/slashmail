@@ -8,6 +8,8 @@
 
 CLI for searching, managing, drafting, and bulk-operating on emails via IMAP.
 
+Website and tutorials: [slashmail.io](https://www.slashmail.io)
+
 ## Install
 
 ### From crates.io

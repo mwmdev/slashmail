@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="description" content="Slashmail is a fast, scriptable CLI for searching, drafting, and managing email over IMAP.">
+  <meta name="description" content="Free, open-source CLI to search, read, draft, and clean up email over IMAP (Gmail, Proton Mail Bridge, and more), from your terminal or your AI agent.">
   <meta property="og:type" content="website">
   <meta property="og:site_name" content="slashmail">
   <meta property="og:locale" content="en_US">
@@ -22,9 +22,27 @@
   <meta name="twitter:image" content="https://www.slashmail.io/og-image.png">
   <meta name="twitter:image:alt" content="Slashmail landing page with the headline Your inbox has a command line and a terminal preview">
   <meta name="theme-color" content="#f3f4f8">
-  <title>slashmail — email, from the command line</title>
+  <title>slashmail — IMAP email CLI for you and your AI agent</title>
   <link rel="canonical" href="https://www.slashmail.io/">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
+  <link rel="icon" href="favicon.ico" sizes="48x48">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "slashmail",
+    "description": "Free, open-source command-line email client for IMAP. Search, read, draft, and clean up email from your terminal or your AI agent. It never sends mail.",
+    "url": "https://www.slashmail.io/",
+    "applicationCategory": "DeveloperApplication",
+    "operatingSystem": "Linux, macOS, Windows",
+    "downloadUrl": "https://github.com/mwmdev/slashmail/releases/latest",
+    "license": ["https://spdx.org/licenses/MIT.html", "https://spdx.org/licenses/Apache-2.0.html"],
+    "isAccessibleForFree": true,
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+    "author": { "@type": "Person", "name": "Michael Wassmer" },
+    "sameAs": ["https://github.com/mwmdev/slashmail", "https://crates.io/crates/slashmail"]
+  }
+  </script>
   <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="styles.css?v=0.8.1-4">
 </head>
@@ -239,7 +257,7 @@ user = "<!--email_off-->you@gmail.com<!--/email_off-->"</code></pre>
     <section class="setup-section" id="how-it-works" aria-labelledby="how-title">
       <div class="section-intro">
         <p class="section-label">How it works</p>
-        <h2 id="how-title">Connect your mailbox.</h2>
+        <h2 id="how-title">Connect any IMAP mailbox.</h2>
         <p>Slashmail runs on your machine and talks to your mail server over IMAP.</p>
       </div>
 
@@ -287,7 +305,7 @@ user = "<!--email_off-->you@gmail.com<!--/email_off-->"</code></pre>
     <section class="examples-section" id="use-cases" aria-labelledby="examples-title">
       <div class="section-intro">
         <p class="section-label">Real commands, real work</p>
-        <h2 id="examples-title">Start with an outcome.</h2>
+        <h2 id="examples-title">Email tasks for you and your agent.</h2>
         <p>Use the same commands by hand, in scripts, or through an agent.</p>
       </div>
 
@@ -435,7 +453,7 @@ Updated 2 message(s).</pre>
     <section class="commands-section" id="commands" aria-labelledby="commands-title">
       <div class="commands-heading">
         <p class="section-label">The complete command set</p>
-        <h2 id="commands-title">Your inbox toolbox</h2>
+        <h2 id="commands-title">Email commands for your terminal.</h2>
         <p>Focused commands that compose cleanly in your terminal, scripts, and agent workflows.</p>
         <a class="cta-button" href="#get-started">Get started <span aria-hidden="true">↓</span></a>
       </div>
