@@ -413,6 +413,15 @@ slashmail completions zsh > ~/.zfunc/_slashmail
 slashmail completions fish > ~/.config/fish/completions/slashmail.fish
 ```
 
+## Safety
+
+- **Nothing is deleted permanently.** `delete` moves messages to the trash folder. `delete` and `move` remove a message from its folder only after the server has copied it to the destination, and no command expunges anything else. Your provider empties Trash on its own schedule (Gmail after 30 days).
+- **Preview before acting.** `delete`, `move`, and `mark` list the matching messages first. `--dry-run` stops there; without `--yes`, the command asks before acting and the answer defaults to no.
+- **Filters decide what changes.** Omitting every filter matches every message in the folder, and with `--all-folders` every message in every searched folder: `slashmail delete --yes` moves the whole INBOX to Trash. Check the count before you confirm.
+- **`mark` can't be undone selectively.** After a bulk `mark --read`, which messages were unread is lost. Preview with `--dry-run`.
+- **Stale results are refused.** If a folder's `UIDVALIDITY` changed since the search, `delete`, `move`, `mark`, `export`, and `read` stop instead of acting on other messages.
+- **Back up first.** Before a bulk change, `export` the messages to `.eml` files. `export` and `attachments --save` never overwrite a file without `--force`.
+
 ## AI Agent Skill
 
 slashmail includes a skill file (`skills/slashmail/SKILL.md`) that teaches AI agents how to manage your email through natural language.
@@ -513,3 +522,9 @@ All errors print to stderr. Combine `--yes` with cron or scripts for unattended 
 
 - `--tls` is required for all non-loopback IMAP hosts; plaintext is only allowed for `localhost` and loopback addresses (for example ProtonMail Bridge)
 - If you get certificate errors, ensure your system CA certificates are up to date
+
+## License
+
+Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or [MIT license](LICENSE-MIT) at your option. slashmail is free software, provided as is, without warranty.
+
+Unless you explicitly state otherwise, any contribution intentionally submitted for inclusion in slashmail by you, as defined in the Apache-2.0 license, shall be dual licensed as above, without any additional terms or conditions.

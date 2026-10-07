@@ -26,7 +26,7 @@
   <link rel="canonical" href="https://www.slashmail.io/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=0.8.1-3">
+  <link rel="stylesheet" href="styles.css?v=0.8.1-4">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -109,11 +109,11 @@
                 </tr>
               </thead>
               <tbody>
-                <tr><td>4917</td><td>Archive</td><td>design@acme.com</td><td>Q2 design assets</td><td>18 Jul</td><td>18.4M</td></tr>
-                <tr><td>2206</td><td>INBOX</td><td>video@studio.io</td><td>Final launch cut</td><td>24 Jul</td><td>12.8M</td></tr>
-                <tr><td>1842</td><td>Sent</td><td>client@example.com</td><td>Signed proposal</td><td>21 Jul</td><td>7.2M</td></tr>
-                <tr><td>909</td><td>Archive</td><td>finance@vendor.io</td><td>Invoice archive</td><td>12 Jul</td><td>6.4M</td></tr>
-                <tr><td>621</td><td>INBOX</td><td>photos@agency.co</td><td>Campaign selects</td><td>27 Jul</td><td>5.6M</td></tr>
+                <tr><td>4917</td><td>Archive</td><td><!--email_off-->design@acme.com<!--/email_off--></td><td>Q2 design assets</td><td>18 Jul</td><td>18.4M</td></tr>
+                <tr><td>2206</td><td>INBOX</td><td><!--email_off-->video@studio.io<!--/email_off--></td><td>Final launch cut</td><td>24 Jul</td><td>12.8M</td></tr>
+                <tr><td>1842</td><td>Sent</td><td><!--email_off-->client@example.com<!--/email_off--></td><td>Signed proposal</td><td>21 Jul</td><td>7.2M</td></tr>
+                <tr><td>909</td><td>Archive</td><td><!--email_off-->finance@vendor.io<!--/email_off--></td><td>Invoice archive</td><td>12 Jul</td><td>6.4M</td></tr>
+                <tr><td>621</td><td>INBOX</td><td><!--email_off-->photos@agency.co<!--/email_off--></td><td>Campaign selects</td><td>27 Jul</td><td>5.6M</td></tr>
               </tbody>
             </table>
             <p class="terminal-summary">5 message(s)</p>
@@ -127,9 +127,9 @@
                 <tr><th>UID</th><th>Folder</th><th>From</th><th>Subject</th><th>Date</th><th>Size</th></tr>
               </thead>
               <tbody>
-                <tr><td>3120</td><td>Archive</td><td>pm@acme.com</td><td>Product spec v3</td><td>12 Sep</td><td>2.4M</td></tr>
-                <tr><td>2987</td><td>INBOX</td><td>pm@acme.com</td><td>Re: Spec review</td><td>28 Aug</td><td>1.1M</td></tr>
-                <tr><td>2410</td><td>Archive</td><td>design@acme.com</td><td>Spec mockups</td><td>3 Jul</td><td>6.8M</td></tr>
+                <tr><td>3120</td><td>Archive</td><td><!--email_off-->pm@acme.com<!--/email_off--></td><td>Product spec v3</td><td>12 Sep</td><td>2.4M</td></tr>
+                <tr><td>2987</td><td>INBOX</td><td><!--email_off-->pm@acme.com<!--/email_off--></td><td>Re: Spec review</td><td>28 Aug</td><td>1.1M</td></tr>
+                <tr><td>2410</td><td>Archive</td><td><!--email_off-->design@acme.com<!--/email_off--></td><td>Spec mockups</td><td>3 Jul</td><td>6.8M</td></tr>
               </tbody>
             </table>
             <p class="terminal-summary">3 message(s)</p>
@@ -199,7 +199,7 @@
           <p class="step-sub">Fill in your account settings:</p>
           <pre class="copy-block"><code>host = "imap.gmail.com"
 tls = true
-user = "you@gmail.com"</code></pre>
+user = "<!--email_off-->you@gmail.com<!--/email_off-->"</code></pre>
         </li>
         <li class="setup-step">
           <h3>Set your password</h3>
@@ -337,9 +337,9 @@ user = "you@gmail.com"</code></pre>
 <pre class="ga-out">┌──────┬──────────┬─────────┬──────────────────┬──────────────┬──────┐
 │  UID ┆ Account  ┆ Folder  ┆ From             ┆ Subject      ┆ Size │
 ╞══════╪══════════╪═════════╪══════════════════╪══════════════╪══════╡
-│ 2041 ┆ work     ┆ INBOX   ┆ billing@acme.com ┆ Invoice 2041 ┆  48K │
-│ 1977 ┆ work     ┆ Archive ┆ billing@acme.com ┆ Invoice 1977 ┆  51K │
-│  388 ┆ personal ┆ INBOX   ┆ hello@fiber.net  ┆ Your invoice ┆  22K │
+│ 2041 ┆ work     ┆ INBOX   ┆ <!--email_off-->billing@acme.com<!--/email_off--> ┆ Invoice 2041 ┆  48K │
+│ 1977 ┆ work     ┆ Archive ┆ <!--email_off-->billing@acme.com<!--/email_off--> ┆ Invoice 1977 ┆  51K │
+│  388 ┆ personal ┆ INBOX   ┆ <!--email_off-->hello@fiber.net<!--/email_off-->  ┆ Your invoice ┆  22K │
 └──────┴──────────┴─────────┴──────────────────┴──────────────┴──────┘
 3 message(s)</pre>
 </div>
@@ -368,7 +368,7 @@ Exported 12 message(s) to ./invoice-backup</pre>
     "uid": 2213,
     "account": "work",
     "folder": "INBOX",
-    "from": "Dana Kim &lt;dana@client.io&gt;",
+    "from": "Dana Kim &lt;<!--email_off-->dana@client.io<!--/email_off-->&gt;",
     "subject": "Revised timeline",
     "answered": false
   }
@@ -382,9 +382,9 @@ Exported 12 message(s) to ./invoice-backup</pre>
 <pre class="ga-out">┌──────┬──────────────────────────┬───────────────────────┬──────┐
 │  UID ┆ From                     ┆ Subject               ┆ Size │
 ╞══════╪══════════════════════════╪═══════════════════════╪══════╡
-│ 1502 ┆ notifications@github.com ┆ [slashmail] CI passed ┆   9K │
-│ 1488 ┆ notifications@linear.app ┆ Weekly digest         ┆  31K │
-│ 1460 ┆ notifications@github.com ┆ [slashmail] New issue ┆  12K │
+│ 1502 ┆ <!--email_off-->notifications@github.com<!--/email_off--> ┆ [slashmail] CI passed ┆   9K │
+│ 1488 ┆ <!--email_off-->notifications@linear.app<!--/email_off--> ┆ Weekly digest         ┆  31K │
+│ 1460 ┆ <!--email_off-->notifications@github.com<!--/email_off--> ┆ [slashmail] New issue ┆  12K │
 └──────┴──────────────────────────┴───────────────────────┴──────┘
 Dry run: 3 message(s) would be moved to Archive.</pre>
 <p class="ga-dest is-local">Nothing changes yet</p>
@@ -408,14 +408,14 @@ Updated 2 message(s).</pre>
 <p class="ga-cmd">
 <span class="prompt">$</span> <code>printf '%s\n' 'Thanks, received.' | slashmail reply --account work 1842</code>
 </p>
-<pre class="ga-out ga-wrap">Draft saved: Account=work | Folder=Drafts | UID=311 | To=Dana Kim &lt;dana@client.io&gt; | Cc= | Bcc= | Subject=Re: Revised timeline</pre>
+<pre class="ga-out ga-wrap">Draft saved: Account=work | Folder=Drafts | UID=311 | To=Dana Kim &lt;<!--email_off-->dana@client.io<!--/email_off-->&gt; | Cc= | Bcc= | Subject=Re: Revised timeline</pre>
 <p class="ga-dest is-server">Saved in Drafts, not sent</p>
 </div>
 <div class="ga-panel" role="tabpanel" id="ga-panel-compose" aria-labelledby="ga-tab-compose" hidden>
 <p class="ga-cmd">
-<span class="prompt">$</span> <code>printf '%s\n' 'Please review the attached proposal.' | slashmail draft --account work --to client@example.com --subject "Proposal" --attach ./proposal.pdf</code>
+<span class="prompt">$</span> <code>printf '%s\n' 'Please review the attached proposal.' | slashmail draft --account work --to <!--email_off-->client@example.com<!--/email_off--> --subject "Proposal" --attach ./proposal.pdf</code>
 </p>
-<pre class="ga-out ga-wrap">Draft saved: Account=work | Folder=Drafts | UID=312 | To=client@example.com | Cc= | Bcc= | Subject=Proposal</pre>
+<pre class="ga-out ga-wrap">Draft saved: Account=work | Folder=Drafts | UID=312 | To=<!--email_off-->client@example.com<!--/email_off--> | Cc= | Bcc= | Subject=Proposal</pre>
 <p class="ga-dest is-server">Saved in Drafts, not sent</p>
 </div>
 <div class="ga-panel" role="tabpanel" id="ga-panel-brief" aria-labelledby="ga-tab-brief" hidden>
@@ -497,7 +497,7 @@ Updated 2 message(s).</pre>
 
     <section class="commands-section privacy-section" id="privacy" aria-labelledby="privacy-title">
       <div class="commands-heading">
-        <p class="section-label">Privacy</p>
+        <p class="section-label">Privacy and safety</p>
         <h2 id="privacy-title">Your mail, your machine.</h2>
       </div>
       <div class="command-list">
@@ -511,19 +511,39 @@ Updated 2 message(s).</pre>
         </article>
         <article>
           <strong>Credentials</strong>
-          <p>Read from an environment variable, a <span class="inline-code">.env</span> file beside your config, or a prompt.</p>
+          <p>Read from an environment variable or a <span class="inline-code">.env</span> file beside your config.</p>
         </article>
         <article>
           <strong>Draft only</strong>
-          <p>Saved to the Drafts folder on your own mail server. Slashmail has no way to send.</p>
+          <p>Saved to the Drafts folder on your own mail server. <strong>Slashmail has no way to send.</strong></p>
         </article>
         <article>
           <strong>AI agents</strong>
           <p>When your LLM agent runs <span class="inline-code">read</span>, its provider receives the full message. For confidential mail, <a href="tutorials/local-model.html">use slashmail with a local model</a>.</p>
         </article>
         <article>
+          <strong>Trash, not gone</strong>
+          <p><span class="inline-code">delete</span> moves messages to Trash. Slashmail has no command that deletes mail permanently.</p>
+        </article>
+        <article>
+          <strong>Preview first</strong>
+          <p><span class="inline-code">--dry-run</span> lists the messages a command would change. Without <span class="inline-code">--yes</span>, <span class="inline-code">delete</span>, <span class="inline-code">move</span>, and <span class="inline-code">mark</span> ask before acting, and default to no.</p>
+        </article>
+        <article>
+          <strong>Read-only reads</strong>
+          <p><span class="inline-code">search</span>, <span class="inline-code">read</span>, <span class="inline-code">count</span>, and <span class="inline-code">export</span> open folders read-only and leave messages unread.</p>
+        </article>
+        <article>
+          <strong>Back up first</strong>
+          <p>Before a bulk change, <span class="inline-code">export</span> the messages to .eml files. It never overwrites a file unless you add <span class="inline-code">--force</span>.</p>
+        </article>
+        <article>
           <strong>This site</strong>
-          <p>No analytics, tracking scripts, or third-party requests.</p>
+          <p>Served through Cloudflare, with cookie-free visit counts and bot protection. No ads or cross-site tracking.</p>
+        </article>
+        <article>
+          <strong>Provided as is</strong>
+          <p>Slashmail is free software, provided as is, without warranty, under the <a href="https://github.com/mwmdev/slashmail/blob/main/LICENSE-MIT" target="_blank" rel="noreferrer">MIT</a> or <a href="https://github.com/mwmdev/slashmail/blob/main/LICENSE-APACHE" target="_blank" rel="noreferrer">Apache-2.0</a> license.</p>
         </article>
       </div>
     </section>
@@ -531,7 +551,7 @@ Updated 2 message(s).</pre>
   </main>
 
   <footer class="site-footer">
-    <span>slashmail <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.1" target="_blank" rel="noreferrer">v0.8.1</a> · Last updated 5 October 2026</span>
+    <span>slashmail <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.1" target="_blank" rel="noreferrer">v0.8.1</a> · Last updated 7 October 2026</span>
     <nav aria-label="Footer navigation">
       <a href="https://github.com/mwmdev/slashmail/issues" target="_blank" rel="noreferrer">Report an issue</a>
       <a class="footer-github" href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer" aria-label="Slashmail on GitHub">

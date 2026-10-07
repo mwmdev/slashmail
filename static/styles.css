@@ -1407,6 +1407,7 @@ nav a.cta-button:hover {
 .inline-code {
   font-family: "IBM Plex Mono", monospace;
   font-size: 0.86em;
+  white-space: nowrap;
 }
 
 .video-section {
@@ -1826,9 +1827,13 @@ nav a.cta-button:hover {
   height: 20px;
 }
 
-.command-list p a {
+.command-list p a,
+.command-list p strong {
   color: var(--ink);
   font-weight: 650;
+}
+
+.command-list p a {
   text-underline-offset: 3px;
 }
 
