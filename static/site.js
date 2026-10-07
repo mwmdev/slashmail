@@ -13,7 +13,7 @@ function scheduleCopyReset(element, label) {
 }
 
 document.querySelectorAll('.copy-block').forEach((block) => {
-  const heading = block.closest('.setup-step, .tutorial-step')?.querySelector('h3').textContent ?? 'Install';
+  const heading = block.closest('.setup-step, .tutorial-step')?.querySelector('h2, h3').textContent ?? 'Install';
   const label = `Copy ${heading} command`;
   block.setAttribute('role', 'button');
   block.setAttribute('tabindex', '0');

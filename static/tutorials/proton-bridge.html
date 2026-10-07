@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Connect slashmail to Proton Mail through Proton Mail Bridge: install Bridge, copy its password, and point slashmail at 127.0.0.1.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="slashmail">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Use slashmail with Proton Mail Bridge">
+  <meta property="og:description" content="Connect slashmail to Proton Mail through Proton Mail Bridge.">
+  <meta property="og:url" content="https://www.slashmail.io/tutorials/proton-bridge.html">
+  <meta property="og:image" content="https://www.slashmail.io/og-image.png">
+  <meta property="og:image:secure_url" content="https://www.slashmail.io/og-image.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Slashmail landing page with the headline Your inbox has a command line and a terminal preview">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Use slashmail with Proton Mail Bridge">
+  <meta name="twitter:description" content="Connect slashmail to Proton Mail through Proton Mail Bridge.">
+  <meta name="twitter:image" content="https://www.slashmail.io/og-image.png">
+  <meta name="twitter:image:alt" content="Slashmail landing page with the headline Your inbox has a command line and a terminal preview">
+  <meta name="theme-color" content="#f3f4f8">
+  <title>Use slashmail with Proton Mail Bridge — slashmail</title>
+  <link rel="canonical" href="https://www.slashmail.io/tutorials/proton-bridge.html">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preload" href="../fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css?v=0.8.1-3">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <a class="wordmark" href="../index.html" aria-label="Slashmail home">
+      <span class="wordmark-mark" aria-hidden="true">/</span>slashmail
+    </a>
+    <nav aria-label="Primary navigation">
+      <a class="nav-secondary" href="../index.html#how-it-works">How it works</a>
+      <a class="nav-secondary" href="../index.html#use-cases">Use cases</a>
+      <a class="nav-secondary" href="../index.html#commands">Commands</a>
+      <a class="nav-secondary" href="../index.html#privacy">Privacy</a>
+      <div class="nav-menu">
+        <button class="nav-menu-button is-current" type="button" aria-expanded="false" aria-controls="tutorials-menu">Tutorials<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg></button>
+        <ul class="nav-submenu" id="tutorials-menu">
+          <li><a href="gmail.html">Set up Gmail</a></li>
+          <li><a href="proton-bridge.html" aria-current="page">Set up Proton Mail Bridge</a></li>
+          <li><a href="ai-agent.html">Use an AI agent</a></li>
+          <li><a href="local-model.html">Use a local model</a></li>
+        </ul>
+      </div>
+      <a class="nav-secondary cta-button-outline" href="../index.html#demo">Watch the demo</a>
+      <a class="cta-button cta-button-sm" href="../index.html#get-started">Get started</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <article class="tutorial" aria-labelledby="tutorial-title">
+      <div class="section-intro">
+        <p class="section-label">Tutorial</p>
+        <h1 id="tutorial-title">Use slashmail with Proton Mail Bridge.</h1>
+        <p>Proton stores your mail encrypted, so IMAP apps can't read it directly. Proton Mail Bridge runs on your computer, decrypts your mail there, and serves it over IMAP at 127.0.0.1. slashmail connects to it like any other mail server.</p>
+      </div>
+
+      <figure class="flow flow-bridge" aria-label="Proton sends your encrypted mailbox over TLS to Proton Mail Bridge on your machine. Bridge decrypts it and serves it to slashmail over IMAP at 127.0.0.1 port 1143.">
+        <div class="flow-zone is-server">
+          <p class="flow-zone-label">Proton</p>
+          <p class="flow-node">Encrypted mailbox</p>
+        </div>
+        <div class="flow-link" aria-hidden="true"><span class="map-pill">TLS</span></div>
+        <div class="flow-zone is-local">
+          <p class="flow-zone-label">Your machine</p>
+          <p class="flow-node">Proton Mail Bridge<span class="flow-node-meta">decrypts</span></p>
+          <div class="flow-link" aria-hidden="true"><span class="map-pill">IMAP 127.0.0.1:1143</span></div>
+          <p class="flow-node is-core"><span class="wordmark-mark" aria-hidden="true">/</span>slashmail</p>
+        </div>
+      </figure>
+
+      <div class="tutorial-body">
+        <aside class="tutorial-aside" aria-label="Before you start">
+          <h2>You need</h2>
+          <ul class="tutorial-needs">
+            <li>A paid Proton plan that includes Mail; the free plan has no Bridge</li>
+            <li>Windows 10 (22H2) or 11, macOS 15 or later, or 64-bit Linux</li>
+            <li>slashmail installed (<a href="../index.html#get-started">get started</a>)</li>
+          </ul>
+        </aside>
+
+        <div class="tutorial-content">
+          <ol class="tutorial-steps">
+            <li class="tutorial-step">
+              <h2>Install Bridge</h2>
+              <p>Download Proton Mail Bridge from <a href="https://proton.me/mail/bridge" target="_blank" rel="noreferrer">proton.me/mail/bridge</a> and install it. On Linux, Bridge comes as a .deb or .rpm package and needs a keychain such as GNOME Keyring or pass.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Sign in</h2>
+              <p>Open Bridge and sign in with your Proton account. Bridge then downloads your mailbox; until this first sync finishes, searches can miss messages.</p>
+              <p>Keep Bridge running, since slashmail reaches your mail only through it. Bridge starts with your computer unless you turn off <em>Open on startup</em> in its settings.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Copy the Bridge password</h2>
+              <p>Select your account in Bridge. Under <em>Mailbox details</em>, the IMAP settings show your username, a password, and the port, 1143 unless another app had it. The password is made by Bridge; your Proton password won't work here.</p>
+              <p>On a Linux server without a screen, start Bridge in a terminal, sign in with <code>login</code>, then run <code>info</code> to see the same settings:</p>
+              <pre class="copy-block"><code>protonmail-bridge --cli</code></pre>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Point slashmail at Bridge</h2>
+              <p>Create a config file:</p>
+              <dl class="config-paths">
+                <div><dt>Linux</dt><dd>~/.config/slashmail/config.toml</dd></div>
+                <div><dt>Mac</dt><dd>~/Library/Application Support/slashmail/config.toml</dd></div>
+                <div><dt>Win</dt><dd>%APPDATA%\slashmail\config.toml</dd></div>
+              </dl>
+              <p>Use the address and port from Bridge:</p>
+              <pre class="copy-block"><code>host = "127.0.0.1"
+port = 1143
+user = "you@proton.me"</code></pre>
+              <p>Leave out <code>tls</code>. slashmail allows unencrypted IMAP only to your own machine, and Bridge only accepts connections from it. Keep Bridge's connection mode on STARTTLS, its default.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Save the password</h2>
+              <p>Create a <code>.env</code> file next to <code>config.toml</code> with the Bridge password, and keep it readable only by you:</p>
+              <pre class="copy-block"><code>SLASHMAIL_PASS="your-bridge-password"</code></pre>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Check the connection</h2>
+              <pre class="copy-block"><code>slashmail status</code></pre>
+              <p>You should see Proton's folders, with your own folders under <code>Folders/</code> and your labels under <code>Labels/</code>:</p>
+              <pre class="term-output is-table" aria-label="Example output">┌─────────────────┬──────────┬────────┬────────┐
+│ Folder          ┆ Messages ┆ Unseen ┆ Recent │
+╞═════════════════╪══════════╪════════╪════════╡
+│ INBOX           ┆ 142      ┆ 12     ┆ 3      │
+│ Drafts          ┆ 6        ┆ 0      ┆ 0      │
+│ Sent            ┆ 619      ┆ 0      ┆ 0      │
+│ Starred         ┆ 18       ┆ 2      ┆ 0      │
+│ Archive         ┆ 8431     ┆ 0      ┆ 0      │
+│ Spam            ┆ 27       ┆ 27     ┆ 0      │
+│ Trash           ┆ 3        ┆ 1      ┆ 0      │
+│ All Mail        ┆ 9508     ┆ 12     ┆ 3      │
+│ Folders/Clients ┆ 310      ┆ 0      ┆ 0      │
+│ Labels/Invoices ┆ 52       ┆ 0      ┆ 0      │
+│ Total           ┆ 19116    ┆ 54     ┆ 6      │
+└─────────────────┴──────────┴────────┴────────┘</pre>
+            </li>
+          </ol>
+
+          <h2 class="tutorial-subhead">Folders and labels</h2>
+          <div class="table-scroll">
+            <table class="tutorial-table">
+              <thead>
+                <tr><th scope="col">In Proton</th><th scope="col">In slashmail</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">A folder you made</th><td><code>--folder "Folders/Clients"</code></td></tr>
+                <tr><th scope="row">A label</th><td><code>--folder "Labels/Invoices"</code></td></tr>
+                <tr><th scope="row">Every folder at once</th><td><code>--all-folders</code> lists each message once, from its folder. It skips labels, Starred, All Mail, Spam, and Trash.</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <h2 class="tutorial-subhead">Troubleshooting</h2>
+          <dl class="trouble-list">
+            <div>
+              <dt><code>Connection refused</code></dt>
+              <dd>Bridge isn't running, or it uses another port. Start Bridge and compare the port under <em>Mailbox details</em> with <code>port</code> in <code>config.toml</code>.</dd>
+            </div>
+            <div>
+              <dt><code>IMAP login failed: No Response: no such user</code></dt>
+              <dd>Bridge rejected the username or password. Use the Bridge password from <em>Mailbox details</em>, not your Proton password.</dd>
+            </div>
+            <div>
+              <dt><code>Failed to TLS-connect</code></dt>
+              <dd>Remove <code>tls = true</code> or <code>--tls</code>. slashmail talks to Bridge without TLS.</dd>
+            </div>
+            <div>
+              <dt><code>IMAP connections to non-loopback hosts require TLS</code></dt>
+              <dd>Set <code>host</code> to <code>127.0.0.1</code>. Bridge only accepts connections from the same computer.</dd>
+            </div>
+            <div>
+              <dt><code>Non-ASCII search requires server support for LITERAL+ or LITERAL-</code></dt>
+              <dd>slashmail can't search Bridge for text with accents or other non-ASCII characters: it sends such text with an IMAP extension that Bridge doesn't support. Narrow the search with <code>--from</code> and <code>--since</code> instead, then check the subjects in <code>search --json</code>.</dd>
+            </div>
+            <div>
+              <dt>A subject search misses messages</dt>
+              <dd>Bridge searches subjects as stored, and a subject with accented characters is usually stored encoded, so <code>--subject</code> and <code>--text</code> can miss any word in it, even a plain English one. Narrow with <code>--from</code> and <code>--since</code>, then check the subjects in <code>search --json</code>.</dd>
+            </div>
+          </dl>
+
+          <aside class="tutorial-note">
+            <h2>Keep it all on your machine</h2>
+            <p>Proton stores your mail encrypted, Bridge decrypts it on your computer, and a <a href="local-model.html">local model</a> can read it there.</p>
+          </aside>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <span>slashmail <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.1" target="_blank" rel="noreferrer">v0.8.1</a> · Last updated 6 October 2026</span>
+    <nav aria-label="Footer navigation">
+      <a href="https://github.com/mwmdev/slashmail/issues" target="_blank" rel="noreferrer">Report an issue</a>
+      <a class="footer-github" href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer" aria-label="Slashmail on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+    </nav>
+  </footer>
+
+  <a class="to-top" href="#" aria-label="Back to top">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </a>
+
+  <script src="../site.js?v=0.8.1-3"></script>
+</body>
+</html>

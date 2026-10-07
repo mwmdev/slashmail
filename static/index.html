@@ -26,7 +26,7 @@
   <link rel="canonical" href="https://www.slashmail.io/">
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
   <link rel="preload" href="fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
-  <link rel="stylesheet" href="styles.css?v=0.8.1-2">
+  <link rel="stylesheet" href="styles.css?v=0.8.1-3">
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
@@ -43,8 +43,10 @@
       <div class="nav-menu">
         <button class="nav-menu-button" type="button" aria-expanded="false" aria-controls="tutorials-menu">Tutorials<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg></button>
         <ul class="nav-submenu" id="tutorials-menu">
-          <li><a href="tutorials.html#local-model">Use a local model</a></li>
-          <li><a href="tutorials.html#proton-bridge">Use Proton Mail Bridge</a></li>
+          <li><a href="tutorials/gmail.html">Set up Gmail</a></li>
+          <li><a href="tutorials/proton-bridge.html">Set up Proton Mail Bridge</a></li>
+          <li><a href="tutorials/ai-agent.html">Use an AI agent</a></li>
+          <li><a href="tutorials/local-model.html">Use a local model</a></li>
         </ul>
       </div>
       <a class="nav-secondary cta-button-outline" href="#demo">Watch the demo</a>
@@ -206,10 +208,10 @@ user = "you@gmail.com"</code></pre>
           <pre class="copy-block"><code>SLASHMAIL_PASS="your-password"</code></pre>
           <p>Or leave it unset and enter it when asked.</p>
           <dl class="config-paths password-notes">
-            <div><dt>Gmail</dt><dd>Use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">app password</a>, not your Google password. Requires 2-Step Verification.</dd></div>
+            <div><dt>Gmail</dt><dd>Use an <a href="https://myaccount.google.com/apppasswords" target="_blank" rel="noreferrer">app password</a>, not your Google password. Requires 2-Step Verification. See the <a href="tutorials/gmail.html">Gmail tutorial</a>.</dd></div>
             <div><dt>Yahoo</dt><dd>Use an app password from your account security settings.</dd></div>
             <div><dt>iCloud</dt><dd>Use an app-specific password from your Apple Account.</dd></div>
-            <div><dt>Proton</dt><dd>Use the password shown in Proton Mail Bridge. See the <a href="tutorials.html#proton-bridge">Bridge tutorial</a>.</dd></div>
+            <div><dt>Proton</dt><dd>Use the password shown in Proton Mail Bridge. See the <a href="tutorials/proton-bridge.html">Bridge tutorial</a>.</dd></div>
             <div><dt>Outlook</dt><dd>Not supported yet: Microsoft no longer accepts passwords over IMAP.</dd></div>
           </dl>
         </li>
@@ -517,7 +519,7 @@ Updated 2 message(s).</pre>
         </article>
         <article>
           <strong>AI agents</strong>
-          <p>When your LLM agent runs <span class="inline-code">read</span>, its provider receives the full message. For confidential mail, <a href="tutorials.html#local-model">use slashmail with a local model</a>.</p>
+          <p>When your LLM agent runs <span class="inline-code">read</span>, its provider receives the full message. For confidential mail, <a href="tutorials/local-model.html">use slashmail with a local model</a>.</p>
         </article>
         <article>
           <strong>This site</strong>
@@ -542,7 +544,7 @@ Updated 2 message(s).</pre>
     <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
   </a>
 
-  <script src="site.js?v=0.8.1-2"></script>
+  <script src="site.js?v=0.8.1-3"></script>
   <script>
     const navLinks = new Map([...document.querySelectorAll('nav a[href^="#"]')].map((link) => [link.hash.slice(1), link]));
     const sectionSpy = new IntersectionObserver((entries) => {

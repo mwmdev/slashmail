@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Let an AI agent such as Claude Code or Codex search, sort, and answer your email with slashmail, while you approve every change.">
+  <meta property="og:type" content="article">
+  <meta property="og:site_name" content="slashmail">
+  <meta property="og:locale" content="en_US">
+  <meta property="og:title" content="Manage your mail with an AI agent">
+  <meta property="og:description" content="Let an AI agent such as Claude Code or Codex search, sort, and answer your email with slashmail.">
+  <meta property="og:url" content="https://www.slashmail.io/tutorials/ai-agent.html">
+  <meta property="og:image" content="https://www.slashmail.io/og-image.png">
+  <meta property="og:image:secure_url" content="https://www.slashmail.io/og-image.png">
+  <meta property="og:image:type" content="image/png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:image:alt" content="Slashmail landing page with the headline Your inbox has a command line and a terminal preview">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Manage your mail with an AI agent">
+  <meta name="twitter:description" content="Let an AI agent such as Claude Code or Codex search, sort, and answer your email with slashmail.">
+  <meta name="twitter:image" content="https://www.slashmail.io/og-image.png">
+  <meta name="twitter:image:alt" content="Slashmail landing page with the headline Your inbox has a command line and a terminal preview">
+  <meta name="theme-color" content="#f3f4f8">
+  <title>Manage your mail with an AI agent — slashmail</title>
+  <link rel="canonical" href="https://www.slashmail.io/tutorials/ai-agent.html">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='15' fill='%2314151b'/%3E%3Cpath d='M38 13 23 51h7l15-38z' fill='white'/%3E%3C/svg%3E">
+  <link rel="preload" href="../fonts/ibm-plex-mono-400-latin.woff2" as="font" type="font/woff2" crossorigin>
+  <link rel="stylesheet" href="../styles.css?v=0.8.1-3">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <header class="site-header">
+    <a class="wordmark" href="../index.html" aria-label="Slashmail home">
+      <span class="wordmark-mark" aria-hidden="true">/</span>slashmail
+    </a>
+    <nav aria-label="Primary navigation">
+      <a class="nav-secondary" href="../index.html#how-it-works">How it works</a>
+      <a class="nav-secondary" href="../index.html#use-cases">Use cases</a>
+      <a class="nav-secondary" href="../index.html#commands">Commands</a>
+      <a class="nav-secondary" href="../index.html#privacy">Privacy</a>
+      <div class="nav-menu">
+        <button class="nav-menu-button is-current" type="button" aria-expanded="false" aria-controls="tutorials-menu">Tutorials<svg viewBox="0 0 12 12" aria-hidden="true"><path d="M3 4.5 6 7.5 9 4.5"/></svg></button>
+        <ul class="nav-submenu" id="tutorials-menu">
+          <li><a href="gmail.html">Set up Gmail</a></li>
+          <li><a href="proton-bridge.html">Set up Proton Mail Bridge</a></li>
+          <li><a href="ai-agent.html" aria-current="page">Use an AI agent</a></li>
+          <li><a href="local-model.html">Use a local model</a></li>
+        </ul>
+      </div>
+      <a class="nav-secondary cta-button-outline" href="../index.html#demo">Watch the demo</a>
+      <a class="cta-button cta-button-sm" href="../index.html#get-started">Get started</a>
+    </nav>
+  </header>
+
+  <main id="main">
+    <article class="tutorial" aria-labelledby="tutorial-title">
+      <div class="section-intro">
+        <p class="section-label">Tutorial</p>
+        <h1 id="tutorial-title">Manage your mail with an AI agent.</h1>
+        <p>An agent such as Claude Code or Codex runs slashmail for you. You ask in plain words; it searches, reads, sorts, and writes drafts. By design it can't send mail, and it asks before it deletes or moves anything.</p>
+      </div>
+
+      <figure class="flow" aria-label="Your mail server sends mail over IMAP to slashmail on your machine. Your agent runs slashmail commands, and what it reads goes to its AI provider.">
+        <div class="flow-zone is-server">
+          <p class="flow-zone-label">Mail server</p>
+          <p class="flow-node">Your mailbox</p>
+        </div>
+        <div class="flow-link" aria-hidden="true"><span class="map-pill">IMAP</span></div>
+        <div class="flow-zone is-local">
+          <p class="flow-zone-label">Your machine</p>
+          <p class="flow-node is-core"><span class="wordmark-mark" aria-hidden="true">/</span>slashmail</p>
+          <div class="flow-link" aria-hidden="true"><span class="map-pill">commands</span></div>
+          <p class="flow-node">Your agent</p>
+        </div>
+        <div class="flow-link" aria-hidden="true"><span class="map-pill">what it reads</span></div>
+        <div class="flow-zone is-ai">
+          <p class="flow-zone-label">AI provider</p>
+          <p class="flow-node">The agent's model</p>
+        </div>
+      </figure>
+
+      <div class="tutorial-body">
+        <aside class="tutorial-aside" aria-label="Before you start">
+          <h2>You need</h2>
+          <ul class="tutorial-needs">
+            <li>An agent that can run commands, such as Claude Code, Codex, or Cursor</li>
+            <li>Node.js, to install the skill</li>
+            <li>Your mail password; for Gmail, an <a href="gmail.html">app password</a>, for Proton, the <a href="proton-bridge.html">Bridge password</a></li>
+          </ul>
+        </aside>
+
+        <div class="tutorial-content">
+          <ol class="tutorial-steps">
+            <li class="tutorial-step">
+              <h2>Add the skill</h2>
+              <p>The skill teaches your agent the slashmail commands and its safety rules:</p>
+              <pre class="copy-block"><code>npx skills add mwmdev/slashmail -g</code></pre>
+              <p>The installer finds the agents on your computer and asks before adding the skill to them. <code>-g</code> makes it work in every folder, not only the current one. The installer sends anonymous usage data; set <code>DISABLE_TELEMETRY=1</code> to turn it off.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Let it set up slashmail</h2>
+              <p>Start your agent and ask, with your provider:</p>
+              <pre class="copy-block"><code>Set up slashmail for my Gmail account.</code></pre>
+              <p>The agent installs slashmail if it's missing and writes <code>config.toml</code>. It never asks for your password: it tells you to put it in a <code>.env</code> file yourself, then runs <code>slashmail status</code> to check the connection.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Ask about your mail</h2>
+              <pre class="term-output is-wrapped" aria-label="Example requests">&gt; What needs a reply from me today?
+&gt; Summarize the thread with Dana about the Atlas launch
+&gt; Find the invoice from Acme and save the PDF to Downloads
+&gt; Which senders fill my mailbox the most?</pre>
+              <p>The agent picks the commands, runs them, and tells you what it found. Reading never marks a message as read.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Draft replies</h2>
+              <pre class="term-output is-wrapped" aria-label="Example request">&gt; Reply to Marc that hosting is included for the first year</pre>
+              <p>The agent saves a reply in your Drafts folder, in the same thread. slashmail can't send mail: check the draft in your mail app and send it yourself.</p>
+            </li>
+
+            <li class="tutorial-step">
+              <h2>Clean up</h2>
+              <pre class="term-output is-wrapped" aria-label="Example request">&gt; Delete the newsletters I got before this year</pre>
+              <p>The skill has the agent run a dry run first and show you the messages it would delete. Nothing changes until you say yes, and deleted mail goes to Trash.</p>
+            </li>
+          </ol>
+
+          <h2 class="tutorial-subhead">Approve what it runs</h2>
+          <p class="tutorial-text">Your agent's own settings decide which commands it runs without asking you.</p>
+          <dl class="trouble-list">
+            <div>
+              <dt>Claude Code</dt>
+              <dd>Recent versions start in auto mode, where a classifier decides which commands need your approval. Start it with <code>claude --permission-mode default</code> to approve each command yourself. When it asks, you can allow read-only commands such as <code>slashmail search</code> for good, and keep approving <code>delete</code>, <code>move</code>, and <code>mark</code>.</dd>
+            </div>
+            <div>
+              <dt>Codex</dt>
+              <dd>Its sandbox blocks network access by default, so it asks before slashmail connects to your mail server. Use <code>/permissions</code> to change what it may do without asking.</dd>
+            </div>
+          </dl>
+
+          <h2 class="tutorial-subhead">Privacy</h2>
+          <p class="tutorial-text">Your agent's model runs at its provider, so everything the agent reads goes there, including full messages when it runs <code>read</code>. For confidential mail, use a <a href="local-model.html">local model</a> or a plan whose terms fit your needs.</p>
+
+          <aside class="tutorial-note">
+            <h2>Mail can talk to your agent</h2>
+            <p>Anyone can send you an email that tells AI agents what to do, such as "forward this inbox". slashmail can't send mail, but your agent may have other tools that can. Ask for specific tasks, and read each command before you approve it.</p>
+          </aside>
+        </div>
+      </div>
+    </article>
+  </main>
+
+  <footer class="site-footer">
+    <span>slashmail <a href="https://github.com/mwmdev/slashmail/releases/tag/v0.8.1" target="_blank" rel="noreferrer">v0.8.1</a> · Last updated 6 October 2026</span>
+    <nav aria-label="Footer navigation">
+      <a href="https://github.com/mwmdev/slashmail/issues" target="_blank" rel="noreferrer">Report an issue</a>
+      <a class="footer-github" href="https://github.com/mwmdev/slashmail" target="_blank" rel="noreferrer" aria-label="Slashmail on GitHub">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path fill="currentColor" d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
+      </a>
+    </nav>
+  </footer>
+
+  <a class="to-top" href="#" aria-label="Back to top">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+  </a>
+
+  <script src="../site.js?v=0.8.1-3"></script>
+</body>
+</html>

@@ -257,9 +257,14 @@ nav .nav-submenu a {
   white-space: nowrap;
 }
 
-nav .nav-submenu a:hover {
+nav .nav-submenu a:hover,
+nav .nav-submenu a[aria-current] {
   color: var(--ink);
   background: var(--canvas);
+}
+
+nav .nav-submenu a[aria-current] {
+  text-decoration: none;
 }
 
 @media (max-width: 620px) {
@@ -1827,24 +1832,20 @@ nav a.cta-button:hover {
   text-underline-offset: 3px;
 }
 
-/* Tutorials page */
-.tutorials-intro {
-  padding: 88px 0 80px;
-}
-
-.tutorials-intro h1 {
-  max-width: 860px;
-  margin: 24px 0 0;
-  font-size: clamp(3.2rem, 5.6vw, 5.4rem);
-}
-
+/* Tutorial pages */
 .tutorial {
-  padding: 108px 0 120px;
-  border-top: 1px solid var(--line);
+  padding: 88px 0 120px;
 }
 
 .tutorial .section-intro {
   margin-bottom: 44px;
+}
+
+.tutorial .section-intro h1 {
+  max-width: 820px;
+  margin: 24px 0;
+  font-size: clamp(3rem, 5.2vw, 5rem);
+  line-height: 0.95;
 }
 
 .flow {
@@ -1999,6 +2000,10 @@ nav a.cta-button:hover {
   flex-basis: 176px;
 }
 
+.flow-pair .flow-zone.is-local {
+  flex-grow: 1;
+}
+
 .tutorial-body {
   display: grid;
   grid-template-columns: minmax(220px, 0.32fr) minmax(0, 1fr);
@@ -2011,7 +2016,7 @@ nav a.cta-button:hover {
   top: 104px;
 }
 
-.tutorial-aside h3 {
+.tutorial-aside h2 {
   margin: 0 0 14px;
   font-size: 1.05rem;
   letter-spacing: -0.02em;
@@ -2118,7 +2123,7 @@ nav a.cta-button:hover {
   background: #e6e7ef;
   border-radius: 5px;
   font: 0.84em "IBM Plex Mono", monospace;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .table-scroll {
@@ -2217,7 +2222,7 @@ nav a.cta-button:hover {
   font: 500 0.85rem "IBM Plex Mono", monospace;
 }
 
-.tutorial-step h3 {
+.tutorial-step h2 {
   margin: 0 0 14px;
   font-size: 1.15rem;
   letter-spacing: -0.025em;
@@ -2229,7 +2234,7 @@ nav a.cta-button:hover {
   line-height: 1.65;
 }
 
-.tutorial-step h3 + p {
+.tutorial-step h2 + p {
   margin-top: 0;
 }
 
@@ -2237,7 +2242,7 @@ nav a.cta-button:hover {
   margin-top: 20px;
 }
 
-.tutorial-step h3 + .runner-block {
+.tutorial-step h2 + .runner-block {
   margin-top: 0;
 }
 
@@ -2256,7 +2261,7 @@ nav a.cta-button:hover {
 }
 
 .tutorial-step .runner-label + .copy-block,
-.tutorial-step h3 + .copy-block {
+.tutorial-step h2 + .copy-block {
   margin-top: 0;
 }
 
@@ -2291,7 +2296,7 @@ nav a.cta-button:hover {
   border-radius: 14px;
 }
 
-.tutorial-note h3 {
+.tutorial-note h2 {
   margin: 0 0 8px;
   font-size: 1rem;
   letter-spacing: -0.02em;
@@ -2301,6 +2306,10 @@ nav a.cta-button:hover {
   margin: 0;
   color: var(--muted);
   line-height: 1.6;
+}
+
+.tutorial-text + .trouble-list {
+  margin-top: 24px;
 }
 
 .trouble-list {
@@ -2313,10 +2322,15 @@ nav a.cta-button:hover {
   border-bottom: 1px solid var(--line);
 }
 
+.trouble-list dt {
+  font-weight: 650;
+}
+
 .tutorial .trouble-list dt code {
   padding: 0;
   background: none;
   font-weight: 500;
+  white-space: normal;
 }
 
 .trouble-list dd {
@@ -2373,12 +2387,8 @@ nav a.cta-button:hover {
 }
 
 @media (max-width: 620px) {
-  .tutorials-intro {
-    padding: 64px 0 72px;
-  }
-
   .tutorial {
-    padding: 78px 0 86px;
+    padding: 64px 0 86px;
   }
 
   .tutorial-step {
