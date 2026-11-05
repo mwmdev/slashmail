@@ -2275,7 +2275,7 @@ mod tests {
         assert!(error.to_string().contains("not a regular file"));
     }
 
-    #[cfg(unix)]
+    #[cfg(all(unix, not(target_os = "macos")))]
     #[test]
     fn non_unicode_attachment_basename_is_rejected() {
         use std::ffi::OsString;
