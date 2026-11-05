@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-11-05
+
 ### Added
 
 - `draft_format` setting (`"plain"` or `"html"`, top level or per account) sets the body format for `draft` and `reply`, and `--plain` forces plain text when it is `"html"`
@@ -203,7 +205,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - Plaintext connection warning for non-loopback hosts
 - Passwords securely zeroed from memory after login
 
-[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/mwmdev/slashmail/compare/v0.8.2...HEAD
+[0.8.2]: https://github.com/mwmdev/slashmail/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/mwmdev/slashmail/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/mwmdev/slashmail/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/mwmdev/slashmail/compare/v0.6.0...v0.7.0

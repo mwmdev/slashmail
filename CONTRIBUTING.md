@@ -11,7 +11,7 @@ cargo build
 ```bash
 scripts/test.sh                 # fmt, clippy, unit and scripted tests
 scripts/test.sh --integration   # also the GreenMail suite (needs Docker)
-scripts/test.sh --ci            # every CI job except windows (needs Docker and cargo-deny)
+scripts/test.sh --ci            # every CI job that runs on Linux (needs Docker and cargo-deny)
 ```
 
 CI runs the same checks; scripts/test.sh must pass before a PR can be merged.

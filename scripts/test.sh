@@ -18,7 +18,7 @@ case "${1:-}" in
     cat <<'EOF'
 usage: scripts/test.sh [--integration | --ci]
   --integration  also run the GreenMail suite (needs Docker)
-  --ci           every CI job except windows: check, package, cargo deny, GreenMail, MSRV 1.88 (needs Docker, cargo-deny)
+  --ci           every CI job that runs on Linux: check, package, cargo deny, GreenMail, MSRV 1.88 (needs Docker, cargo-deny)
 EOF
     exit 0
     ;;

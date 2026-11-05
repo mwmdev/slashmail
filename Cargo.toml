@@ -1,6 +1,6 @@
 [package]
 name = "slashmail"
-version = "0.8.1"
+version = "0.8.2"
 edition = "2021"
 rust-version = "1.88"
 description = "CLI for searching, managing, drafting, and bulk-operating on emails via IMAP"
@@ -11,7 +11,7 @@ homepage = "https://www.slashmail.io"
 readme = "README.md"
 keywords = ["email", "imap", "cli", "search", "draft"]
 categories = ["command-line-utilities", "email"]
-exclude = [".github/", "static/", "CLAUDE.md", "audit.md", "deny.toml", "flake.nix", "flake.lock"]
+exclude = [".github/", "static/", "AGENTS.md", "audit.md", "deny.toml", "flake.nix", "flake.lock"]
 
 [dependencies]
 imap = "=3.0.0-alpha.15"
