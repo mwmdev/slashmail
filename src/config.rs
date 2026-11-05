@@ -12,6 +12,7 @@ pub struct Config {
     pub user: Option<String>,
     pub sender: Option<String>,
     pub drafts_folder: Option<String>,
+    pub draft_format: Option<crate::draft::BodyFormat>,
     pub trash_folder: Option<String>,
     pub default_folder: Option<String>,
     pub default_account: Option<String>,
@@ -30,6 +31,7 @@ pub struct AccountConfig {
     pub pass_env: Option<String>,
     pub sender: Option<String>,
     pub drafts_folder: Option<String>,
+    pub draft_format: Option<crate::draft::BodyFormat>,
     pub trash_folder: Option<String>,
     pub default_folder: Option<String>,
 }
@@ -44,6 +46,7 @@ pub struct ResolvedAccount {
     pub pass_env: Option<String>,
     pub sender: Option<String>,
     pub drafts_folder: Option<String>,
+    pub draft_format: crate::draft::BodyFormat,
     pub trash_folder: String,
     pub default_folder: String,
 }
@@ -234,6 +237,10 @@ impl Config {
                 .drafts_folder
                 .clone()
                 .or_else(|| self.drafts_folder.clone()),
+            draft_format: account
+                .draft_format
+                .or(self.draft_format)
+                .unwrap_or_default(),
             trash_folder: account
                 .trash_folder
                 .clone()
@@ -275,6 +282,7 @@ impl Config {
             pass_env: None,
             sender: self.sender.clone(),
             drafts_folder: self.drafts_folder.clone(),
+            draft_format: self.draft_format.unwrap_or_default(),
             trash_folder: self
                 .trash_folder
                 .clone()
@@ -457,6 +465,43 @@ mod tests {
     }
 
     #[test]
+    fn named_account_draft_format_overrides_top_level() {
+        use crate::draft::BodyFormat::{Html, Plain};
+        let toml = r#"
+            draft_format = "html"
+
+            [[accounts]]
+            name = "a"
+            host = "imap.example.com"
+            user = "opaque-login"
+            draft_format = "plain"
+
+            [[accounts]]
+            name = "b"
+            host = "imap.example.com"
+            user = "another-opaque-login"
+        "#;
+        let config: Config = toml::from_str(toml).unwrap();
+        let accounts = config
+            .resolve_accounts(AccountSelector::All, &ConnectionOverrides::default())
+            .unwrap();
+        assert_eq!(accounts[0].draft_format, Plain);
+        assert_eq!(accounts[1].draft_format, Html);
+    }
+
+    #[test]
+    fn draft_format_defaults_to_plain_and_rejects_unknown_values() {
+        let config: Config = toml::from_str("user = \"opaque-login\"").unwrap();
+        let account = config
+            .resolve_accounts(AccountSelector::Default, &ConnectionOverrides::default())
+            .unwrap()
+            .pop()
+            .unwrap();
+        assert_eq!(account.draft_format, crate::draft::BodyFormat::Plain);
+        assert!(toml::from_str::<Config>("draft_format = \"htm\"").is_err());
+    }
+
+    #[test]
     fn resolve_legacy_account_carries_optional_draft_values_for_non_email_login() {
         let toml = r#"
             user = "opaque-login"
@@ -547,6 +592,7 @@ mod tests {
                 pass_env: None,
                 sender: None,
                 drafts_folder: None,
+                draft_format: crate::draft::BodyFormat::Plain,
                 trash_folder: "Trash".into(),
                 default_folder: "INBOX".into(),
             }

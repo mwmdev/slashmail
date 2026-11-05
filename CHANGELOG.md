@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- `draft_format` setting (`"plain"` or `"html"`, top level or per account) sets the body format for `draft` and `reply`, and `--plain` forces plain text when it is `"html"`
+
 ## [0.8.1] - 2026-10-02
 
 ### Added

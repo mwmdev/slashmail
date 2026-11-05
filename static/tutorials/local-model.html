@@ -201,13 +201,13 @@ PARAMETER num_ctx 32768</code></pre>
                 <p class="runner-label">Ollama</p>
                 <pre class="copy-block"><code>slashmail read --uid 2212 |
   ollama run mail --think=false "Write a short reply to this email in its language. Say that hosting is included for the first year and that I will send a quote for the German version this week. Output only the reply text." |
-  slashmail reply 2212</code></pre>
+  slashmail reply --plain 2212</code></pre>
               </div>
               <div class="runner-block" data-runner-for="lmstudio">
                 <p class="runner-label">LM Studio</p>
                 <pre class="copy-block"><code>slashmail read --uid 2212 |
   lms chat mail --reasoning off -p "Write a short reply to this email in its language. Say that hosting is included for the first year and that I will send a quote for the German version this week. Output only the reply text." |
-  slashmail reply 2212</code></pre>
+  slashmail reply --plain 2212</code></pre>
               </div>
               <p>The model wrote this reply to a French email in our test:</p>
               <pre class="term-output is-wrapped" aria-label="Model output for the reply">Bonjour Marc,

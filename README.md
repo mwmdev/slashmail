@@ -137,6 +137,7 @@ user = "user@company.com"
 pass_env = "SLASHMAIL_WORK_PASS"
 sender = "Work User <user@company.com>"
 drafts_folder = "Drafts"
+draft_format = "html"
 default_folder = "INBOX"
 ```
 
@@ -153,7 +154,7 @@ When `[[accounts]]` is configured, slashmail uses `default_account` by default, 
 
 Use `--config <PATH>` to specify an alternative config file location.
 
-`sender` and `drafts_folder` are optional at both the top level and inside an `[[accounts]]` entry. An account value takes precedence over the top-level value. Draft composition falls back to `user` only when it is a valid email mailbox; configure `sender` when the IMAP login is not an email address.
+`sender` and `drafts_folder` are optional at both the top level and inside an `[[accounts]]` entry. An account value takes precedence over the top-level value. Draft composition falls back to `user` only when it is a valid email mailbox; configure `sender` when the IMAP login is not an email address. `draft_format` (`"plain"` or `"html"`, default `"plain"`) sets the body format for `draft` and `reply`; an account value takes precedence over the top-level value, and `--html` or `--plain` overrides both.
 
 The draft destination is resolved in this order: command `--drafts-folder`, the selected account's resolved `drafts_folder` (account value, then top-level value), then exactly one selectable server mailbox marked `\Drafts`. Slashmail fails without saving if the chosen override is invalid or server discovery finds zero or multiple valid Drafts mailboxes.
 
@@ -161,7 +162,8 @@ The draft destination is resolved in this order: command `--drafts-folder`, the 
 
 `draft` and `reply` save unsent messages with the IMAP `\Draft` flag; they do
 not send mail. The body is read from stdin and is plain text unless `--html`
-is used. Repeat `--to`, `--cc`, `--bcc`, or `--attach` to add multiple
+is used or the account's `draft_format` is `"html"`; `--plain` forces plain
+text. Repeat `--to`, `--cc`, `--bcc`, or `--attach` to add multiple
 recipients or local files.
 
 ```bash

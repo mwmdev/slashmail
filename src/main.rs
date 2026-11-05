@@ -118,9 +118,13 @@ struct DraftArgs {
     #[arg(long, default_value = "")]
     subject: String,
 
-    /// Treat stdin as an HTML body instead of plain text
-    #[arg(long)]
+    /// Treat stdin as an HTML body (overrides draft_format)
+    #[arg(long, conflicts_with = "plain")]
     html: bool,
+
+    /// Treat stdin as a plain-text body (overrides draft_format)
+    #[arg(long)]
+    plain: bool,
 
     /// Local file to attach (repeat once per file)
     #[arg(long, value_name = "PATH")]
@@ -145,9 +149,13 @@ struct ReplyArgs {
     #[arg(short, long)]
     folder: Option<String>,
 
-    /// Treat stdin as an HTML body instead of plain text
-    #[arg(long)]
+    /// Treat stdin as an HTML body (overrides draft_format)
+    #[arg(long, conflicts_with = "plain")]
     html: bool,
+
+    /// Treat stdin as a plain-text body (overrides draft_format)
+    #[arg(long)]
+    plain: bool,
 
     /// Omit the quoted original message
     #[arg(long)]
@@ -834,6 +842,16 @@ fn save_draft(
     )
 }
 
+fn draft_body_format(html: bool, plain: bool, configured: draft::BodyFormat) -> draft::BodyFormat {
+    if html {
+        draft::BodyFormat::Html
+    } else if plain {
+        draft::BodyFormat::Plain
+    } else {
+        configured
+    }
+}
+
 fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> {
     let sender = draft_sender(account)?;
     let to = parse_recipient_flags(&args.to, "To")?;
@@ -859,11 +877,7 @@ fn cmd_draft(account: &config::ResolvedAccount, args: &DraftArgs) -> Result<()> 
             bcc,
             subject: args.subject.clone(),
             body,
-            format: if args.html {
-                draft::BodyFormat::Html
-            } else {
-                draft::BodyFormat::Plain
-            },
+            format: draft_body_format(args.html, args.plain, account.draft_format),
         },
         attachments,
     )?;
@@ -893,11 +907,7 @@ fn cmd_reply(account: &config::ResolvedAccount, args: &ReplyArgs) -> Result<()> 
             sender,
             source: &source,
             body,
-            format: if args.html {
-                draft::BodyFormat::Html
-            } else {
-                draft::BodyFormat::Plain
-            },
+            format: draft_body_format(args.html, args.plain, account.draft_format),
             quote_original: !args.no_quote,
         },
         attachments,
@@ -1970,6 +1980,7 @@ mod tests {
             pass_env: Some("WORK_PASS".to_string()),
             sender: Some("Me <me@example.com>".to_string()),
             drafts_folder: None,
+            draft_format: draft::BodyFormat::Plain,
             trash_folder: "Trash".to_string(),
             default_folder: "INBOX".to_string(),
         }
@@ -2053,6 +2064,32 @@ mod tests {
         assert_eq!(args.bcc, ["bcc@example.com"]);
         assert!(args.html);
         assert_eq!(args.drafts_folder.as_deref(), Some("Nested/Drafts"));
+    }
+
+    #[test]
+    fn draft_body_format_prefers_flags_over_config() {
+        use draft::BodyFormat::{Html, Plain};
+        assert_eq!(draft_body_format(true, false, Plain), Html);
+        assert_eq!(draft_body_format(false, true, Html), Plain);
+        assert_eq!(draft_body_format(false, false, Html), Html);
+        assert_eq!(draft_body_format(false, false, Plain), Plain);
+    }
+
+    #[test]
+    fn draft_clap_rejects_html_with_plain() {
+        assert!(Cli::try_parse_from([
+            "slashmail",
+            "draft",
+            "--to",
+            "a@example.com",
+            "--subject",
+            "Hi",
+            "--html",
+            "--plain",
+        ])
+        .is_err());
+        assert!(Cli::try_parse_from(["slashmail", "reply", "--html", "--plain", "4"]).is_err());
+        assert!(Cli::try_parse_from(["slashmail", "reply", "--plain", "4"]).is_ok());
     }
 
     #[test]

@@ -424,6 +424,53 @@ fn cli_saves_html_draft_as_html_without_delivery() {
 }
 
 #[test]
+fn cli_draft_uses_configured_html_format_and_plain_flag_overrides_it() {
+    let owner = unique_user();
+    let recipient = unique_user();
+    let mut recipient_session = imap_connect(&recipient);
+    recipient_session.logout().unwrap();
+    create_drafts_folder(&owner);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let config = tmp.path().join("config.toml");
+    let accounts = [("personal", owner.as_str())];
+    write_multi_account_config(&config, &accounts);
+    let written = std::fs::read_to_string(&config).unwrap();
+    std::fs::write(&config, format!("draft_format = \"html\"\n{written}")).unwrap();
+
+    let save_draft = |extra: &[&str], body: &str| {
+        let mut command = slashmail_cmd(&config, &accounts);
+        command
+            .args(["--account", "personal", "draft", "--to"])
+            .arg(user_email(&recipient))
+            .args(["--drafts-folder", "Drafts"])
+            .args(extra);
+        assert_cmd_success(output_with_stdin(command, body));
+    };
+
+    save_draft(&[], "<p>Configured <strong>HTML</strong></p>");
+    let mut session = imap_connect(&owner);
+    let (first_uid, raw, _) = only_message_in(&mut session, "Drafts");
+    let parsed = mailparse::parse_mail(&raw).unwrap();
+    assert_eq!(parsed.ctype.mimetype, "text/html");
+
+    save_draft(&["--plain"], "Plain override");
+    session.select("Drafts").unwrap();
+    let second_uid = session
+        .uid_search("ALL")
+        .unwrap()
+        .into_iter()
+        .find(|uid| *uid != first_uid)
+        .expect("second draft saved");
+    let fetches = session
+        .uid_fetch(&second_uid.to_string(), "(BODY.PEEK[])")
+        .unwrap();
+    let parsed = mailparse::parse_mail(fetches.get(0).unwrap().body().unwrap()).unwrap();
+    assert_eq!(parsed.ctype.mimetype, "text/plain");
+    session.logout().unwrap();
+}
+
+#[test]
 fn cli_saves_draft_with_ordered_attachments_without_delivery() {
     let owner = unique_user();
     let recipient = unique_user();

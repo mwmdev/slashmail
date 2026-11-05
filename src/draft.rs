@@ -8,8 +8,10 @@ use mailparse::{addrparse_header, MailAddr, MailHeader, MailHeaderMap, ParsedMai
 
 use crate::read::decoded_text_body;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum BodyFormat {
+    #[default]
     Plain,
     Html,
 }

@@ -56,8 +56,8 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 
 | Command | Description | Extra flags |
 |---------|-------------|-------------|
-| `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`, `--attach PATH`; `--subject`, `--html`, `--drafts-folder`, `--json` |
-| `reply UID` | Save an unsent reply-all draft; body is read from stdin | repeatable `--attach PATH`; `--folder`, `--html`, `--no-quote`, `--drafts-folder`, `--json` |
+| `draft` | Save a new unsent draft; body is read from stdin | repeatable `--to`, `--cc`, `--bcc`, `--attach PATH`; `--subject`, `--html`, `--plain`, `--drafts-folder`, `--json` |
+| `reply UID` | Save an unsent reply-all draft; body is read from stdin | repeatable `--attach PATH`; `--folder`, `--html`, `--plain`, `--no-quote`, `--drafts-folder`, `--json` |
 | `attachments UID` | List or save received attachments without marking the message seen | `--folder`, `--json`, `--save`, repeatable `--part PART`, `-o DIR`, `--force` |
 | `search` | Retrieve messages (sorted newest-first); JSON rows include `message_id`, `in_reply_to`, `references`, `seen`, `answered`, `flagged` | `--json` |
 | `read` | Display message content without marking it seen | `--uid UID` (exact message in `--folder`; single account), `--json` |
@@ -85,7 +85,7 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 ## Draft and Reply Rules
 
 - Pipe the new body through stdin. Do not pass it as a positional argument or build raw MIME.
-- Plain text is the default. Add `--html` only when the supplied stdin body is HTML.
+- Always pass the format explicitly: `--html` when the stdin body is HTML, `--plain` otherwise. Without either flag the account's `draft_format` config applies, which may be HTML.
 - For a new draft, pass at least one `--to`. Each `--to`, `--cc`, or `--bcc` occurrence is exactly one RFC mailbox; repeat flags for multiple recipients instead of comma-splitting.
 - For a reply, select one account, source `--folder` (default: the account's configured default folder), and source UID. Slashmail derives reply-all recipients, subject, and thread headers; there is no sender-only or recipient-override mode.
 - Repeat `--attach PATH` for each exact local regular file. Quote paths containing spaces or shell metacharacters. Symlinks to regular files are accepted and expose the caller-supplied symlink basename; non-Unicode, control-bearing, and unsafe Unicode display names are rejected.
@@ -98,7 +98,7 @@ Date formats: `YYYY-MM-DD` or relative (`7d`, `2w`, `3m`, `1y`). All filters com
 ```bash
 # New plain-text draft
 printf '%s\n' 'Please review the proposal.' |
-  slashmail draft --to client@example.com --subject "Proposal" \
+  slashmail draft --plain --to client@example.com --subject "Proposal" \
     --attach './documents/client proposal.pdf' \
     --attach './charts/revenue.png'
 
@@ -110,16 +110,16 @@ printf '%s\n' '<p>Please review the <strong>proposal</strong>.</p>' |
 
 # Explicit Drafts destination
 printf '%s\n' 'Draft body' |
-  slashmail draft --to client@example.com --drafts-folder "Saved/Drafts"
+  slashmail draft --plain --to client@example.com --drafts-folder "Saved/Drafts"
 
 # Reply-all to UID 1842 in INBOX/default folder, with the original quoted
 printf '%s\n' 'Thanks, this looks good.' |
-  slashmail reply --account work \
+  slashmail reply --plain --account work \
     --attach './documents/revised proposal.pdf' 1842
 
 # Reply from another source folder without quoting
 printf '%s\n' 'Following up with one correction.' |
-  slashmail reply --account work --folder Archive --no-quote 1842
+  slashmail reply --plain --account work --folder Archive --no-quote 1842
 
 # HTML reply to an explicit Drafts destination
 printf '%s\n' '<p>Thanks, this looks good.</p>' |
@@ -180,7 +180,7 @@ slashmail attachments --account work --folder INBOX --save \
 **Search headers and body**: `slashmail search --text "quarterly report"`
 **Search all accounts**: `slashmail search --all-accounts --text "quarterly report"`
 **Read a message**: `slashmail read --from "boss@example.com" --limit 1`
-**Draft a new message**: `printf '%s\n' 'Draft body' | slashmail draft --to recipient@example.com --subject "Subject"`
-**Draft a reply**: `printf '%s\n' 'Reply body' | slashmail reply --folder INBOX 1842`
+**Draft a new message**: `printf '%s\n' 'Draft body' | slashmail draft --plain --to recipient@example.com --subject "Subject"`
+**Draft a reply**: `printf '%s\n' 'Reply body' | slashmail reply --plain --folder INBOX 1842`
 **List received attachments**: `slashmail attachments --folder INBOX 1842`
 **Clean up old newsletters**: `slashmail delete --from "newsletter@" --before 3m --dry-run` then confirm with user before running without `--dry-run`
