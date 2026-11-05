@@ -28,6 +28,7 @@ fn spinner(msg: &str) -> ProgressBar {
 #[derive(Parser)]
 #[command(
     name = "slashmail",
+    version,
     about = "IMAP CLI for searching, managing, and inspecting email"
 )]
 struct Cli {
